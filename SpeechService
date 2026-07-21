@@ -1,0 +1,232 @@
+package com.example.wea_forecast.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+
+/**
+ * 语音识别服务 —— REST API + 内网穿透方案（伪代码 / 骨架）。
+ * <p>
+ * 完整流程：
+ * <pre>
+ *   SILK byte[]
+ *     → 去头 0x02
+ *     → decoder(SILK→PCM)
+ *     → FFmpeg(PCM→WAV)
+ *     → 写本地文件 voice_cache/
+ *     → 查 ngrok 公网 URL
+ *     → 拼接公网 WAV 地址
+ *     → POST Paraformer（异步提交）
+ *     → 轮询 GET /tasks/{taskId}
+ *     → 下载 transcription_url
+ *     → 提取文字
+ *     → finally 删除临时文件
+ * </pre>
+ */
+@Service
+public class SpeechService {
+
+    private static final Logger log = LoggerFactory.getLogger(SpeechService.class);
+    private static final int SAMPLE_RATE = 16000;
+
+    private final RestTemplate restTemplate = new RestTemplate();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // ========== 配置 ==========
+
+    @Value("${llm.stt-base-url}")
+    private String sttBaseUrl;                         // 阿里百炼 STT API 地址
+
+    @Value("${llm.stt-model}")
+    private String sttModel;                           // 模型名，如 paraformer-v2
+
+    @Value("${llm.stt-api-key}")
+    private String sttApiKey;                          // API Key
+
+    @Value("${silk.decoder-path}")
+    private String silkDecoderPath;                    // silk_v3_decoder 路径
+
+    @Value("${ngrok.public-url}")                      // ★ 由 NgrokUtil 动态写入
+    private String ngrokPublicUrl;                     // ngrok 公网地址，如 https://xxx.ngrok-free.app
+
+    @Value("${voice.cache-dir:./voice_cache}")
+    private String cacheDir;                           // 本地缓存目录
+
+    // ========== 对外入口 ==========
+
+    /**
+     * 完整语音识别流程。
+     *
+     * @param silkBytes 下载的原始 SILK 数据（含 0x02 前缀）
+     * @return 识别出的文字
+     */
+    public String recognize(byte[] silkBytes) {
+        // ① 去头：去掉 WeChat 的 0x02 消息类型标记
+        byte[] stripped = Arrays.copyOfRange(silkBytes, 1, silkBytes.length);
+
+        String fileId = UUID.randomUUID().toString().substring(0, 8);
+        Path silkPath = null;
+        Path pcmPath = null;
+        Path wavPath = null;
+
+        try {
+            // ② 确保缓存目录存在
+            Files.createDirectories(Path.of(cacheDir));
+
+            // ③ 保存 SILK 文件
+            silkPath = Path.of(cacheDir, fileId + ".silk");
+            Files.write(silkPath, stripped);
+
+            // ④ decoder: SILK → PCM
+            pcmPath = Path.of(cacheDir, fileId + ".pcm");
+            runDecoder(silkPath, pcmPath);
+
+            // ⑤ FFmpeg: PCM → WAV（加 RIFF 头，Paraformer 要求）
+            wavPath = Path.of(cacheDir, fileId + ".wav");
+            runFfmpeg(pcmPath, wavPath);
+
+            // ⑥ 拼接公网 URL
+            String wavUrl = ngrokPublicUrl.replaceAll("/+$", "")
+                    + "/voice/" + fileId + ".wav";
+            log.info("WAV 公网地址: {}", wavUrl);
+
+            // ⑦ 提交 Paraformer 异步任务
+            String taskId = submitTask(wavUrl);
+            log.info("STT 任务已提交，taskId={}", taskId);
+
+            // ⑧ 轮询等待结果（最长等 30 秒）
+            String transcriptionUrl = pollTask(taskId);
+            if (transcriptionUrl == null) {
+                throw new RuntimeException("STT 轮询超时");
+            }
+
+            // ⑨ 下载识别结果
+            String text = downloadTranscription(transcriptionUrl);
+            log.info("识别结果: {}", text);
+            return text;
+
+        } catch (Exception e) {
+            log.error("语音识别失败: {}", e.getMessage(), e);
+            return null;
+        } finally {
+            // ⑩ 清理临时文件
+            deleteIfExists(silkPath);
+            deleteIfExists(pcmPath);
+            deleteIfExists(wavPath);
+        }
+    }
+
+    // ========== 工具方法 ==========
+
+    /** 运行 silk_v3_decoder */
+    private void runDecoder(Path input, Path output) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(
+                silkDecoderPath,
+                input.toAbsolutePath().toString(),
+                output.toAbsolutePath().toString(),
+                "-Fs_API", String.valueOf(SAMPLE_RATE)
+        );
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        int exit = p.waitFor();
+        if (exit != 0) {
+            String err = new String(p.getInputStream().readAllBytes());
+            throw new RuntimeException("decoder 失败(exit=" + exit + "): " + err);
+        }
+    }
+
+    /** 运行 FFmpeg：PCM → WAV */
+    private void runFfmpeg(Path input, Path output) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(
+                "ffmpeg", "-y",
+                "-f", "s16le", "-ar", String.valueOf(SAMPLE_RATE), "-ac", "1",
+                "-i", input.toAbsolutePath().toString(),
+                output.toAbsolutePath().toString()
+        );
+        pb.redirectErrorStream(true);
+        int exit = pb.start().waitFor();
+        if (exit != 0) {
+            throw new RuntimeException("FFmpeg 失败，exit=" + exit);
+        }
+    }
+
+    // ========== Paraformer REST API ==========
+
+    /** 提交异步识别任务 */
+    private String submitTask(String wavUrl) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Bearer " + sttApiKey);
+        headers.set("X-DashScope-Async", "enable");           // ★ 必须异步
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", sttModel);
+        body.put("input", Map.of("file_urls", List.of(wavUrl)));
+        body.put("parameters", Map.of(
+                "channel_id", List.of(0),
+                "language_hints", List.of("zh", "en")
+        ));
+
+        String apiUrl = sttBaseUrl.replaceAll("/+$", "")
+                + "/api/v1/services/audio/asr/transcription";
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                apiUrl, new HttpEntity<>(body, headers), String.class);
+
+        JsonNode root = objectMapper.readTree(resp.getBody());
+        String taskId = root.path("output").path("task_id").asText();
+        if (taskId.isBlank()) {
+            throw new RuntimeException("未获取到 task_id: " + resp.getBody());
+        }
+        return taskId;
+    }
+
+    /** 轮询任务（每 2 秒一次，最多 15 次） */
+    private String pollTask(String taskId) throws InterruptedException {
+        String apiUrl = sttBaseUrl.replaceAll("/+$", "") + "/api/v1/tasks/" + taskId;
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + sttApiKey);
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        for (int i = 1; i <= 15; i++) {
+            Thread.sleep(2000);
+            ResponseEntity<String> resp = restTemplate.exchange(
+                    apiUrl, HttpMethod.GET, entity, String.class);
+            JsonNode root = objectMapper.readTree(resp.getBody());
+            String status = root.path("output").path("task_status").asText();
+            log.info("第{}次轮询: {}", i, status);
+
+            if ("SUCCEEDED".equals(status)) {
+                return root.path("output").path("results").get(0)
+                        .path("transcription_url").asText();
+            }
+            if ("FAILED".equals(status)) {
+                throw new RuntimeException("STT 任务失败: " + resp.getBody());
+            }
+        }
+        return null; // 超时
+    }
+
+    /** 下载识别结果 JSON，提取文字 */
+    private String downloadTranscription(String url) {
+        byte[] bytes = restTemplate.getForObject(url, byte[].class);
+        JsonNode root = objectMapper.readTree(bytes);
+        // 格式: {"transcripts":[{"text":"..."}]}
+        return root.path("transcripts").get(0).path("text").asText();
+    }
+
+    private void deleteIfExists(Path path) {
+        if (path != null) {
+            try { Files.deleteIfExists(path); } catch (Exception ignored) {}
+        }
+    }
+}

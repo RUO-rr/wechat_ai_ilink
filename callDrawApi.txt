@@ -1,0 +1,60 @@
+private byte[] callDrawApi(String prompt) throws Exception {
+    String apiUrl = drawBaseUrl; // 使用环境变量里的完整地址
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    headers.set("Authorization", "Bearer " + drawApiKey);
+
+    // 1. 构建阿里百炼 Qwen-Image 同步接口的请求体（严格按照文档！）
+    Map<String, Object> requestBody = new HashMap<>();
+    // 🔴 即使环境变量为空，这里直接把 model 写死成推荐模型，保证拿到绝对能跑
+    requestBody.put("model", "qwen-image-2.0-pro");
+
+    // 构造 input.messages
+    Map<String, Object> input = new HashMap<>();
+    List<Map<String, Object>> messages = new ArrayList<>();
+    Map<String, Object> userMessage = new HashMap<>();
+    userMessage.put("role", "user");
+
+    List<Map<String, String>> content = new ArrayList<>();
+    Map<String, String> textPart = new HashMap<>();
+    textPart.put("text", prompt);
+    content.add(textPart);
+    userMessage.put("content", content);
+
+    messages.add(userMessage);
+    input.put("messages", messages);
+    requestBody.put("input", input);
+
+    // 构造 parameters (加上反向提示词，让图画得更自然)
+    Map<String, Object> parameters = new HashMap<>();
+    parameters.put("size", "1024*1024");
+    parameters.put("n", 1);
+    parameters.put("negative_prompt", "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。");
+    parameters.put("prompt_extend", true);
+    parameters.put("watermark", false);
+    requestBody.put("parameters", parameters);
+
+    // 2. 转换为 JSON 字符串发送 (强烈建议加上这行日志)
+    String jsonToSend = objectMapper.writeValueAsString(requestBody);
+    log.info("🚀 发送给生图 API 的请求体: {}", jsonToSend);
+
+    HttpEntity<String> request = new HttpEntity<>(jsonToSend, headers);
+
+    // 3. 发送请求（后面的解析逻辑保持不变）
+    try {
+        ResponseEntity<String> response = restTemplate.postForEntity(apiUrl, request, String.class);
+        JsonNode root = objectMapper.readTree(response.getBody());
+        JsonNode results = root.get("output").get("choices");
+        if (results == null || results.size() == 0) {
+            throw new RuntimeException("生图 API 返回的结果为空");
+        }
+        // 注意：同步接口返回结构不是 results 直接拉，而是在 choices 的 message 下面
+        String imageUrl = results.get(0).get("message").get("content").get(0).get("image").asText();
+        log.info("💡 生图成功，图片链接: {}", imageUrl);
+        return restTemplate.getForObject(imageUrl, byte[].class);
+    } catch (Exception e) {
+        log.error("调用绘图 API 异常，错误体: {}", e.getResponseBodyAsString(), e);
+        throw e;
+    }
+}
