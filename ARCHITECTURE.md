@@ -34,6 +34,28 @@ POST /bot/create?userId=wangyangxu      POST /bot/create?label=办公机
 
 ---
 
+### v2.1 → v2.2 数据层演进
+
+```
+v2.1（SQLite + JVM LRU）                 v2.2（MySQL + Redis）
+─────────────────────────               ─────────────────────────
+SQLite 单文件数据库                        MySQL 8 (InnoDB / utf8mb4)
+  ├── 单机单写者（Hikari pool=1）          ├── 连接池 10，支持真实部署
+  └── 消息双写：内存 LRU + DB              └── 消息双写：Redis(缓存) + MySQL(持久化)
+
+ConversationHistory JVM LRU               ConversationHistory Redis
+  ├── LinkedHashMap accessOrder           ├── key = chat:history:{botId}:{userId}
+  ├── max=100 sessions / TTL 30min        ├── TTL 30min（Redis EXPIRE）
+  └── 重启即失                            └── 重启不丢，跨实例共享
+
+UserVoiceState 内存 Map                   UserVoiceState Redis String
+```
+
+**迁移动机**：SQLite 适合单机单写者，但无法支撑多实例部署与容器化；
+MySQL 承担持久化、Redis 承担缓存，配合 `docker-compose.yml` 实现可复现部署。
+
+---
+
 ## 二、核心技术决策与技术亮点
 
 ### 2.1 Function Calling 工具系统 —— 策略模式 + 动态装配
@@ -192,10 +214,10 @@ Bot 身份: bot.wechatUserId      = "wxid_abc123"   ← 扫码者微信 ID
 - 与 `msg.from_user_id` 不属于同一 ID 体系，无法关联
 - 重启恢复时无意义
 
-### 2.7 数据隔离与持久化
+### 2.7 数据隔离与持久化（v2.2：SQLite → MySQL + Redis）
 
 ```
-SQLite (WAL 模式)
+MySQL 8 (InnoDB / utf8mb4)
 ├── chat_message (bot_id + user_id 联合索引)
 │   └── 所有消息持久化，bot_id 隔离，user_id 为真实微信 ID
 └── bot_registry (bot_id PK)
@@ -206,13 +228,14 @@ SQLite (WAL 模式)
     └── base_url       ← SDK 服务端点
 ```
 
-**ConversationHistory 缓存架构**：
+**ConversationHistory 缓存架构（v2.2：JVM LRU → Redis）**：
 ```
-LRU 缓存 (LinkedHashMap, accessOrder=true, max=100 sessions)
-  ├── 缓存 key = botId:userId（复合键，多 Bot 隔离）
-  ├── TTL 30 分钟自动过期 → 从 DB 重载
-  ├── LRU 淘汰 → 最久未访问的会话出缓存
-  └── 双写：内存 + DB（DB 失败降级为仅内存，不阻断用户对话）
+Redis (String + JSON, Cache-Aside)
+  ├── 缓存 key = chat:history:{botId}:{userId}（复合键，多 Bot 隔离）
+  ├── TTL 30 分钟自动过期 → 从 MySQL 重载
+  ├── 命中即返回；未命中 → 加载 MySQL → 写回 Redis（SETEX）
+  ├── 每会话本地锁，防止并发读改写丢失更新
+  └── 双写：Redis + MySQL（Redis 失败降级走 DB；DB 失败降级仅 Redis，不阻断对话）
 ```
 
 ### 2.8 稳定性保障
@@ -225,7 +248,7 @@ LRU 缓存 (LinkedHashMap, accessOrder=true, max=100 sessions)
 | 身份变更检测 | `onLoginSuccess` 比对历史 `wechatUserId`，不匹配时告警 + 更新 |
 | 优雅关闭 | `@PreDestroy` → `CompletableFuture.allOf()` 并行关闭，5s 超时 |
 | 路由验证 | `IintService.getClient()` 断言 `ctx.botId == 请求 botId` |
-| 缓存隔离 | `ConversationHistory` 缓存 key 为 `botId:userId` 复合键 |
+| 缓存隔离 | Redis key 为 `chat:history:{botId}:{userId}` 复合键 |
 | ThreadLocal 清理 | `BotContext.clear()` in `finally` |
 | 审计告警 | `BOT_AUDIT` / `BOT_ALERT` 独立 Logger，支持日志采集系统过滤 |
 
@@ -254,11 +277,12 @@ FC 循环结束后检查 LLM 是否遗漏关键工具调用。company 领域的�
 | 指标 | 数值 |
 |------|------|
 | 支持 Bot 数 | ≤ 10（可配置，`bot.max-bots`） |
-| 工具总数 | 5 个 ToolDefinition 实现 |
-| Word 域操作数 | 6 个 WordOperation 策略 |
+| 工具总数 | 8 个 ToolDefinition 实现 |
+| Word 域操作数 | 7 个 WordOperation 策略 |
 | FC 循环上限 | 15 步 + 2 次重复保护 |
 | systemBotId 碰撞概率 | 36^8 ≈ 1/2.8万亿 |
 | 缓存 TTL | 30 分钟 |
-| 缓存隔离 | `botId:userId` 复合键 |
+| 缓存隔离 | Redis key `chat:history:{botId}:{userId}` 复合键 |
+| 数据层 | MySQL 8（InnoDB / utf8mb4）+ Redis 7（缓存） |
 | 重启恢复 | 全自动（bot_registry 持久化 LoginContext + 免扫码恢复） |
 | 编译结果 | 零 ERROR |

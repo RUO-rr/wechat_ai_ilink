@@ -7,7 +7,7 @@
 - **多 Bot 生命周期管理**：每个 Bot 独立线程池，支持扫码登录、免扫码恢复、断线重连、优雅关闭；以 SDK 认证结果为唯一身份信任根
 - **自研 Function Calling 编排引擎**：迭代式工具调用循环，带领域路由、死循环保护、tool 消息对清洗、Watcher 兜底
 - **可插拔工具系统**：策略模式 + Spring 自动装配，8 个工具零侵入扩展（天气 / Word / Excel / PDF / 简历 / 文生图 / 企业查询 / 行业新闻）
-- **上下文持久化**：LRU 缓存 + SQLite 双写，跨轮记忆与文件路径持久化
+- **上下文持久化**：Redis 缓存 + MySQL 双写，跨轮记忆与文件路径持久化
 - **多模态链路**：图片理解、语音识别（STT）、语音合成（TTS）、文件解析（Tika）
 
 ## 技术栈
@@ -15,7 +15,7 @@
 | 类别 | 技术 |
 |------|------|
 | 语言 / 框架 | Java 17、Spring Boot 4.1 |
-| 持久化 | SQLite + MyBatis（规划中：MySQL + Redis） |
+| 持久化 | MySQL 8 + MyBatis（数据层）、Redis 7（缓存层） |
 | 大模型 | DeepSeek（OpenAI 兼容 Chat Completions API） |
 | 多模态 | 阿里百炼 DashScope（文生图 / STT / TTS）、视觉模型 |
 | 文档处理 | Apache POI（Word / Excel）、Apache Tika（文本提取）、LibreOffice（Word→PDF） |
@@ -38,7 +38,7 @@ FunctionCallingOrchestrator（迭代式 FC 循环）
         │
         ├── ToolRouter（领域路由 → 工具子集）
         ├── ToolRegistry（自动装配 8 个工具）
-        └── ConversationHistory（LRU + SQLite 双写）
+        └── ConversationHistory（Redis 缓存 + MySQL 双写）
 ```
 
 详细的架构演进与技术决策见 [ARCHITECTURE.md](ARCHITECTURE.md)，消息时序见 [project-flow.mermaid](project-flow.mermaid)。
@@ -69,6 +69,7 @@ src/main/resources/
 
 - JDK 17+
 - Maven 3.9+
+- MySQL 8.4+ 与 Redis 7+：本机安装，或用仓库根目录的 `docker-compose.yml` 一键启动（`docker compose up -d`）
 - GitHub Packages Token：SDK 依赖 `wechat-ilink-sdk` 托管在 GitHub Packages，首次构建需在 `~/.m2/settings.xml` 配置凭据：
 
 ```xml
@@ -85,6 +86,12 @@ src/main/resources/
 
 - LibreOffice（可选）：`word_to_pdf` 工具需要，通过 `libreoffice.path` 配置可执行文件路径
 
+首次运行前创建数据库（或使用 docker-compose 自动创建）：
+
+```sql
+CREATE DATABASE ai_ilink CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
 ### 环境变量
 
 所有密钥通过环境变量注入，不写入仓库：
@@ -99,6 +106,9 @@ src/main/resources/
 | `WEATHER_API_KEY` / `WEATHER_BASE_URL` | 高德天气 | 否 |
 | `LLM_SEARCH_KEY` | Metaso 联网搜索 | 否 |
 | `TIANYANCHA_API_KEY` | 天眼查企业信息 | 否 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | MySQL 账号密码 | 是 |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | MySQL 地址 / 端口 / 库名（默认 localhost:3306/ai_ilink） | 否 |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 地址 / 端口 / 密码（默认 localhost:6379/无） | 否 |
 
 ### 构建与运行
 
@@ -111,6 +121,8 @@ mvn clean package
 $env:LLM_BASE_URL = "https://api.deepseek.com"
 $env:LLM_MODEL    = "deepseek-chat"
 $env:LLM_API_KEY  = "sk-xxx"
+$env:MYSQL_USER   = "ai_ilink"
+$env:MYSQL_PASSWORD = "ai_ilink123"
 mvn spring-boot:run
 ```
 
@@ -120,7 +132,7 @@ mvn spring-boot:run
 
 ## Roadmap
 
-- [ ] 数据库迁移：MySQL（持久化）+ Redis（缓存）
+- [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
 - [ ] MCP 客户端接入，连接外部工具生态
 - [ ] Context Manager：摘要压缩 + 长期记忆
 - [ ] RAG 文档知识库：文件入库 → 向量检索 → 带引用回答
