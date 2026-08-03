@@ -130,6 +130,7 @@ mvn spring-boot:run
 ## 致谢
 
 - [wechat-ilink-sdk](https://github.com/lith0924) —— 微信消息通道 SDK
+- [openai-resume-builder](https://github.com/openai/openai-resume-builder) —— 简历生成方法论与模板（MIT License，经适配集成，详见 [resume-builder/README.md](src/main/resources/resume-builder/README.md)）
 - DeepSeek / 阿里百炼 DashScope / 天眼查 / Metaso / 高德开放平台
 
 ## License
