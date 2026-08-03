@@ -1,0 +1,248 @@
+ <!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot 管理面板</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; padding: 24px; }
+        h1 { text-align: center; margin-bottom: 24px; color: #1a1a1a; font-size: 24px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .card h3 { margin-bottom: 12px; color: #333; font-size: 16px; }
+        .form-row { display: flex; gap: 10px; }
+        .form-row input { flex: 1; padding: 10px 14px; border: 1px solid #d9d9d9; border-radius: 8px; font-size: 14px; outline: none; }
+        .form-row input:focus { border-color: #1677ff; }
+        button { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; transition: all .2s; }
+        .btn-primary { background: #1677ff; color: #fff; }
+        .btn-primary:hover { background: #4096ff; }
+        .btn-danger { background: #ff4d4f; color: #fff; }
+        .btn-danger:hover { background: #ff7875; }
+        .btn-small { padding: 6px 12px; font-size: 12px; }
+        .btn-outline { background: #fff; color: #1677ff; border: 1px solid #1677ff; }
+        .btn-outline:hover { background: #e6f4ff; }
+        .bot-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }
+        .bot-item:last-child { border-bottom: none; }
+        .bot-info { flex: 1; }
+        .bot-info .bot-id { font-weight: 600; color: #1a1a1a; }
+        .bot-info .bot-meta { font-size: 12px; color: #999; margin-top: 4px; }
+        .bot-actions { display: flex; gap: 8px; }
+        .state-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .state-ONLINE { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        .state-QR_READY { background: #e6f4ff; color: #1677ff; border: 1px solid #91caff; }
+        .state-ERROR { background: #fff2f0; color: #ff4d4f; border: 1px solid #ffccc7; }
+        .state-QR_EXPIRED { background: #fffbe6; color: #faad14; border: 1px solid #ffe58f; }
+        .state-UNINITIALIZED { background: #f5f5f5; color: #999; border: 1px solid #d9d9d9; }
+        .qr-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+        .qr-modal.active { display: flex; }
+        .qr-content { background: #fff; border-radius: 12px; padding: 24px; max-width: 420px; width: 90%; text-align: center; position: relative; }
+        .qr-content h3 { margin-bottom: 16px; }
+        .qr-img-wrap { display: flex; justify-content: center; align-items: center; min-height: 260px; margin-bottom: 16px; }
+        .qr-img-wrap canvas, .qr-img-wrap img { border-radius: 8px; }
+        .qr-loading { color: #999; font-size: 14px; }
+        .qr-close { position: absolute; top: 12px; right: 16px; font-size: 20px; cursor: pointer; color: #999; }
+        .qr-close:hover { color: #333; }
+        .qr-tip { font-size: 12px; color: #999; margin-top: 12px; }
+        .empty { text-align: center; color: #999; padding: 24px; }
+        .health-bar { display: flex; gap: 16px; justify-content: center; margin-bottom: 16px; font-size: 14px; }
+        .health-bar span { padding: 4px 12px; border-radius: 6px; background: #fafafa; }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 14px; z-index: 200; display: none; }
+        .toast.success { background: #52c41a; }
+        .toast.error { background: #ff4d4f; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Bot 管理面板</h1>
+
+    <div class="health-bar" id="healthBar"></div>
+
+    <div class="card">
+        <h3>创建新 Bot</h3>
+        <div class="form-row">
+            <input type="text" id="userIdInput" placeholder="输入用户标识（如 wxid_abc123）" />
+            <button class="btn-primary" onclick="createBot()">创建并登录</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Bot 列表 <button class="btn-outline btn-small" onclick="loadBots()" style="margin-left:8px;">刷新</button></h3>
+        <div id="botList"><div class="empty">加载中...</div></div>
+    </div>
+</div>
+
+<div class="qr-modal" id="qrModal">
+    <div class="qr-content">
+        <span class="qr-close" onclick="closeQr()">&times;</span>
+        <h3 id="qrTitle">扫码登录</h3>
+        <div class="qr-img-wrap" id="qrImgWrap">
+            <span class="qr-loading">二维码生成中...</span>
+        </div>
+        <div class="qr-tip">打开微信 → 扫一扫 → 对准上方二维码</div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let qrPollTimer = null; // 二维码轮询定时器
+
+function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type;
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 3000);
+}
+
+/** 将二维码内容渲染为可扫描的图片 */
+function renderQrImage(text) {
+    const wrap = document.getElementById('qrImgWrap');
+    wrap.innerHTML = '';
+    new QRCode(wrap, {
+        text: text,
+        width: 240,
+        height: 240,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+    });
+}
+
+async function createBot() {
+    const userId = document.getElementById('userIdInput').value.trim();
+    if (!userId) { showToast('请输入用户标识', 'error'); return; }
+    try {
+        const res = await fetch(API + '/bot/create?userId=' + encodeURIComponent(userId), { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Bot 创建成功，正在生成二维码...', 'success');
+            document.getElementById('userIdInput').value = '';
+            // 自动弹出二维码弹窗并轮询等待
+            openQrModal(data.botId);
+            pollQrCode(data.botId);
+            setTimeout(loadBots, 1500);
+        } else {
+            showToast(data.error || '创建失败', 'error');
+        }
+    } catch (e) { showToast('请求失败: ' + e.message, 'error'); }
+}
+
+/** 打开二维码弹窗 */
+function openQrModal(botId) {
+    document.getElementById('qrTitle').textContent = '扫码登录 [' + botId + ']';
+    document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">二维码生成中...</span>';
+    document.getElementById('qrModal').classList.add('active');
+}
+
+/** 轮询等待二维码生成（创建后 QR 可能还没ready） */
+function pollQrCode(botId) {
+    if (qrPollTimer) clearInterval(qrPollTimer);
+    let attempts = 0;
+    qrPollTimer = setInterval(async () => {
+        attempts++;
+        try {
+            const res = await fetch(API + '/bot/' + botId + '/qr');
+            const data = await res.json();
+            if (data.qrCode) {
+                clearInterval(qrPollTimer);
+                qrPollTimer = null;
+                renderQrImage(data.qrCode);
+                return;
+            }
+        } catch (e) { /* ignore */ }
+        if (attempts > 20) {
+            clearInterval(qrPollTimer);
+            qrPollTimer = null;
+            document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">二维码生成超时，请点击刷新重试</span>';
+        }
+    }, 1000);
+}
+
+async function loadBots() {
+    try {
+        const [botsRes, healthRes] = await Promise.all([
+            fetch(API + '/bot/bots'),
+            fetch(API + '/bot/health')
+        ]);
+        const bots = await botsRes.json();
+        const health = await healthRes.json();
+
+        document.getElementById('healthBar').innerHTML =
+            '<span>总计: ' + health.totalBots + '</span>' +
+            '<span style="color:#52c41a">在线: ' + health.online + '</span>' +
+            '<span style="color:#ff4d4f">异常: ' + health.error + '</span>';
+
+        const list = document.getElementById('botList');
+        if (!bots.length) { list.innerHTML = '<div class="empty">暂无 Bot，请创建一个</div>'; return; }
+
+        list.innerHTML = bots.map(bot => `
+            <div class="bot-item">
+                <div class="bot-info">
+                    <div class="bot-id">${bot.botId}
+                        <span class="state-badge state-${bot.state}">${bot.state}</span>
+                    </div>
+                    <div class="bot-meta">
+                        ${bot.label ? '标签: ' + bot.label + ' | ' : ''}微信: ${bot.wechatUserId || '未扫码'} | 创建: ${new Date(bot.createdAt).toLocaleString()}
+                    </div>
+                </div>
+                <div class="bot-actions">
+                    <button class="btn-outline btn-small" onclick="showQr('${bot.botId}')">二维码</button>
+                    <button class="btn-outline btn-small" onclick="refreshQr('${bot.botId}')">刷新</button>
+                    <button class="btn-danger btn-small" onclick="deleteBot('${bot.botId}')">销毁</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (e) { document.getElementById('botList').innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
+/** 点击「二维码」按钮 → 直接渲染二维码图片 */
+async function showQr(botId) {
+    openQrModal(botId);
+    try {
+        const res = await fetch(API + '/bot/' + botId + '/qr');
+        const data = await res.json();
+        if (data.qrCode) {
+            renderQrImage(data.qrCode);
+        } else {
+            document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">' + (data.error || '二维码未生成') + '</span>';
+        }
+    } catch (e) {
+        document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">获取二维码失败</span>';
+    }
+}
+
+function closeQr() {
+    document.getElementById('qrModal').classList.remove('active');
+    if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+}
+
+async function refreshQr(botId) {
+    try {
+        await fetch(API + '/bot/' + botId + '/qr/refresh', { method: 'POST' });
+        showToast('正在重新生成二维码...', 'success');
+        // 自动弹出并轮询新二维码
+        openQrModal(botId);
+        pollQrCode(botId);
+        setTimeout(loadBots, 2000);
+    } catch (e) { showToast('刷新失败', 'error'); }
+}
+
+async function deleteBot(botId) {
+    if (!confirm('确定要销毁 ' + botId + ' 吗？')) return;
+    try {
+        await fetch(API + '/bot/' + botId, { method: 'DELETE' });
+        showToast('Bot 已销毁', 'success');
+        loadBots();
+    } catch (e) { showToast('销毁失败', 'error'); }
+}
+
+// 页面加载 + 每 5 秒自动刷新
+loadBots();
+setInterval(loadBots, 5000);
+</script>
+</body>
+</html>

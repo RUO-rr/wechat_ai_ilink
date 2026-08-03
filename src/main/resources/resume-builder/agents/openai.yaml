@@ -1,0 +1,7 @@
+interface:
+  display_name: "中英文岗位定制简历"
+  short_description: "在线岗位检索、个人信息建档和中英文简历生成与优化"
+  default_prompt: "Use $resume-builder-cn to collect my information, research my target role, assess fit, and create a tailored Chinese or English resume."
+
+policy:
+  allow_implicit_invocation: true

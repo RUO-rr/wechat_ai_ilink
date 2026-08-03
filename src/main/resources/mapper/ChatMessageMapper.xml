@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.wangyangxu.ailink.mapper.ChatMessageMapper">
+
+    <insert id="insert" parameterType="io.github.wangyangxu.ailink.model.ChatMessage">
+        INSERT INTO chat_message (bot_id, user_id, role, content, rich_content, metadata)
+        VALUES (#{botId}, #{userId}, #{role}, #{content}, #{richContent}, #{metadata})
+    </insert>
+
+    <select id="findByBotUser" resultType="io.github.wangyangxu.ailink.model.ChatMessage">
+        SELECT id, bot_id, user_id, role, content, rich_content, metadata, created_at
+        FROM chat_message
+        WHERE bot_id = #{botId} AND user_id = #{userId}
+        ORDER BY id ASC
+    </select>
+
+    <delete id="deleteByBotUser">
+        DELETE FROM chat_message WHERE bot_id = #{botId} AND user_id = #{userId}
+    </delete>
+
+    <delete id="trimOldMessages">
+        DELETE FROM chat_message
+        WHERE bot_id = #{botId} AND user_id = #{userId}
+          AND id NOT IN (
+              SELECT id FROM chat_message
+              WHERE bot_id = #{botId} AND user_id = #{userId}
+              ORDER BY id DESC
+              LIMIT #{keepCount}
+          )
+    </delete>
+
+</mapper>

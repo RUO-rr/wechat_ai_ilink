@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.wangyangxu.ailink.mapper.BotRegistryMapper">
+
+    <insert id="upsert">
+        INSERT INTO bot_registry (bot_id, label, wechat_user_id, wechat_bot_id, bot_token, base_url,
+                                  last_active_at, last_login_at)
+        VALUES (#{botId}, #{label}, #{wechatUserId}, #{wechatBotId}, #{botToken}, #{baseUrl},
+                datetime('now', 'localtime'), datetime('now', 'localtime'))
+        ON CONFLICT(bot_id) DO UPDATE SET
+            label          = COALESCE(#{label}, label),
+            wechat_user_id = COALESCE(#{wechatUserId}, wechat_user_id),
+            wechat_bot_id  = COALESCE(#{wechatBotId}, wechat_bot_id),
+            bot_token      = COALESCE(#{botToken}, bot_token),
+            base_url       = COALESCE(#{baseUrl}, base_url),
+            last_active_at = datetime('now', 'localtime'),
+            last_login_at  = datetime('now', 'localtime')
+    </insert>
+
+    <select id="findAll" resultType="map">
+        SELECT bot_id         AS botId,
+               label,
+               wechat_user_id AS wechatUserId,
+               wechat_bot_id  AS wechatBotId,
+               bot_token      AS botToken,
+               base_url       AS baseUrl,
+               created_at     AS createdAt,
+               last_active_at AS lastActiveAt,
+               last_login_at  AS lastLoginAt
+        FROM bot_registry
+        ORDER BY created_at ASC
+    </select>
+
+    <update id="updateActiveAt">
+        UPDATE bot_registry
+        SET last_active_at = datetime('now', 'localtime')
+        WHERE bot_id = #{botId}
+    </update>
+
+    <delete id="delete">
+        DELETE FROM bot_registry WHERE bot_id = #{botId}
+    </delete>
+
+</mapper>

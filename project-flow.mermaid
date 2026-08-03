@@ -1,0 +1,112 @@
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#e8f4fd', 'primaryTextColor': '#000000', 'primaryBorderColor': '#333333', 'lineColor': '#333333', 'secondaryColor': '#f0f0f0', 'tertiaryColor': '#ffffff'}}}%%
+graph TB
+    subgraph 应用启动
+        A[Spring Boot 启动] --> B[BotManager @PostConstruct]
+        B --> C{DB bot_registry 有记录?}
+        C -->|是| D[遍历恢复 BotInstance]
+        D --> E[注入历史 wechatIdentity]
+        E --> F[对每个 Bot 调用 loginBotAsync]
+        C -->|否| G[跳过恢复]
+        A --> H[MainController CommandLineRunner]
+        H --> I[注册 messageHandler 到 BotManager]
+    end
+
+    subgraph 创建Bot与线程
+        J[POST /bot/create] --> K[BotManager.createBot]
+        K --> L{bots.size >= maxBots?}
+        L -->|是| M[抛出 IllegalStateException]
+        L -->|否| N[generateBotId: bot_ + 8位随机]
+        N --> O[new BotInstance]
+        O --> P[创建 FixedThreadPool core=2<br/>线程名: bot-botId<br/>daemon=true]
+        P --> Q[bots.put botId→instance]
+        Q --> R[loginBotAsync]
+    end
+
+    subgraph 异步登录流程-线程池执行
+        R --> S[bot.executor.submit doLogin]
+        S --> T[设置 state=UNINITIALIZED]
+        T --> U[构建 ILinkClientBuilder]
+        U --> V[注册 BotLoginListener]
+        U --> W[注册 BotMessageListener]
+        V --> X{hasWechatIdentity?}
+        X -->|是| Y[构建 LoginContext 尝试免扫码恢复]
+        Y --> Z[builder.loginContext savedCtx]
+        Z --> AA[client = builder.build]
+        X -->|否| AA
+        AA --> AB{client.isLoggedIn?}
+        AB -->|是| AC[state=ONLINE 免扫码成功]
+        AB -->|否| AD[state=QR_READY]
+        AD --> AE[client.executeLogin 生成二维码]
+        AE --> AF[bot.setQrCode + qrGeneratedAt]
+        AF --> AG[client.getLoginFuture.get<br/>阻塞等待 loginTimeout=180s]
+    end
+
+    subgraph 扫码回调-BotLoginListener
+        AG -->|用户扫码成功| AH[onLoginSuccess 回调]
+        AH --> AI[从 LoginContext 提取<br/>wechatUserId + wechatBotId]
+        AI --> AJ{身份与历史不匹配?}
+        AJ -->|是| AK[告警 alertIdentityChanged]
+        AJ -->|否| AL[setWechatIdentity]
+        AK --> AL
+        AL --> AM[botRegistryMapper.upsert 持久化]
+        AM --> AN[LoginFuture complete]
+        AN --> AO[state=ONLINE]
+        AO --> AP[auditLogin 记录]
+    end
+
+    subgraph 超时与重连
+        AG -->|超时 TimeoutException| AQ[state=QR_EXPIRED]
+        AQ --> AR[tryReconnect bot,3]
+        AR --> AS[executor.submit 重连任务]
+        AS --> AT[循环 i=1..3]
+        AT --> AU[Thread.sleep 5000ms]
+        AU --> AV[state=UNINITIALIZED]
+        AV --> AW[client.executeLogin 重新生成QR]
+        AW --> AX[state=QR_READY]
+        AX --> AY[getLoginFuture.get 等待扫码]
+        AY -->|成功| AZ[state=ONLINE return]
+        AY -->|失败| BA{还有重试次数?}
+        BA -->|是| AT
+        BA -->|否| BB[state=ERROR]
+        BB --> BC[alertReconnectFailed]
+    end
+
+    subgraph 消息处理流程
+        AO --> BD[SDK 推送消息]
+        BD --> BE[BotMessageListener.onMessages]
+        BE --> BF[遍历 messages]
+        BF --> BG[messageHandler.accept botId,msg]
+        BG --> BH[MainController.handleMessage]
+        BH --> BI[设置 BotContext ThreadLocal]
+        BI --> BJ[processItem 路由处理]
+        BJ --> BK{消息类型}
+        BK -->|文本| BL[意图检测→聊天/画图/语音]
+        BK -->|图片| BM[chatImageService]
+        BK -->|语音| BN[chatVoiceService]
+        BK -->|文件| BO[chatFileService]
+        BL --> BP[iintService.sendText 回复]
+        BM --> BP
+        BN --> BP
+        BO --> BP
+    end
+
+    subgraph 生命周期状态机
+        direction LR
+        S1[UNINITIALIZED] -->|executeLogin| S2[QR_READY]
+        S2 -->|扫码成功| S3[ONLINE]
+        S2 -->|超时| S4[QR_EXPIRED]
+        S4 -->|重连成功| S3
+        S4 -->|重连失败| S5[ERROR]
+        S3 -->|断线| S6[DISCONNECTED]
+        S6 -->|重连| S3
+        S3 -->|手动销毁| S7[OFFLINE]
+        S2 -->|登录异常| S5
+    end
+
+    subgraph 优雅关闭
+        C1[@PreDestroy shutdownAll] --> C2[CompletableFuture.runAsync<br/>每个bot.shutdown]
+        C2 --> C3[executor.shutdownNow]
+        C3 --> C4[client.close]
+        C4 --> C5[allOf.get 5s超时]
+        C5 --> C6[bots.clear]
+    end
