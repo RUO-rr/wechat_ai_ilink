@@ -2,6 +2,8 @@ package io.github.wangyangxu.ailink.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -26,8 +28,14 @@ public class UserVoiceState {
     /** 默认音色 */
     public static final String DEFAULT_VOICE = "longanhuan";
 
-    /** 用户ID → 音色ID 的映射 */
-    private final ConcurrentHashMap<String, String> userVoices = new ConcurrentHashMap<>();
+    /** Redis key 前缀：user:voice:{userId} */
+    private static final String VOICE_KEY_PREFIX = "user:voice:";
+
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+
+    /** Redis 不可用时的本地兜底映射（不丢失当前进程内的设置） */
+    private final ConcurrentHashMap<String, String> fallbackVoices = new ConcurrentHashMap<>();
 
     /**
      * 阿里百炼 CosyVoice v3 真实支持的音色。
@@ -81,7 +89,15 @@ public class UserVoiceState {
      * 获取用户当前设置的音色。
      */
     public String getVoice(String userId) {
-        return userVoices.getOrDefault(userId, DEFAULT_VOICE);
+        try {
+            String voice = redisTemplate.opsForValue().get(VOICE_KEY_PREFIX + userId);
+            if (voice != null && !voice.isBlank()) {
+                return voice;
+            }
+        } catch (Exception e) {
+            log.warn("Redis 读取音色失败 userId={}，使用本地兜底: {}", userId, e.getMessage());
+        }
+        return fallbackVoices.getOrDefault(userId, DEFAULT_VOICE);
     }
 
     /**
@@ -92,7 +108,12 @@ public class UserVoiceState {
             log.warn("不支持的音色: {}", voiceId);
             return false;
         }
-        userVoices.put(userId, voiceId);
+        try {
+            redisTemplate.opsForValue().set(VOICE_KEY_PREFIX + userId, voiceId);
+        } catch (Exception e) {
+            log.warn("Redis 写入音色失败 userId={}，仅写入本地兜底: {}", userId, e.getMessage());
+        }
+        fallbackVoices.put(userId, voiceId);
         log.info("用户 {} 的音色已切换为 {}", userId, voiceId);
         return true;
     }
@@ -138,7 +159,12 @@ public class UserVoiceState {
      * 清除用户的音色设置，恢复默认。
      */
     public void resetVoice(String userId) {
-        userVoices.remove(userId);
+        try {
+            redisTemplate.delete(VOICE_KEY_PREFIX + userId);
+        } catch (Exception e) {
+            log.warn("Redis 删除音色失败 userId={}，忽略: {}", userId, e.getMessage());
+        }
+        fallbackVoices.remove(userId);
         log.info("用户 {} 的音色已重置为默认", userId);
     }
 }
