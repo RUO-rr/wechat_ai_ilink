@@ -7,15 +7,16 @@
         INSERT INTO bot_registry (bot_id, label, wechat_user_id, wechat_bot_id, bot_token, base_url,
                                   last_active_at, last_login_at)
         VALUES (#{botId}, #{label}, #{wechatUserId}, #{wechatBotId}, #{botToken}, #{baseUrl},
-                datetime('now', 'localtime'), datetime('now', 'localtime'))
-        ON CONFLICT(bot_id) DO UPDATE SET
-            label          = COALESCE(#{label}, label),
-            wechat_user_id = COALESCE(#{wechatUserId}, wechat_user_id),
-            wechat_bot_id  = COALESCE(#{wechatBotId}, wechat_bot_id),
-            bot_token      = COALESCE(#{botToken}, bot_token),
-            base_url       = COALESCE(#{baseUrl}, base_url),
-            last_active_at = datetime('now', 'localtime'),
-            last_login_at  = datetime('now', 'localtime')
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        AS new
+        ON DUPLICATE KEY UPDATE
+            label          = COALESCE(new.label, bot_registry.label),
+            wechat_user_id = COALESCE(new.wechatUserId, bot_registry.wechat_user_id),
+            wechat_bot_id  = COALESCE(new.wechatBotId, bot_registry.wechat_bot_id),
+            bot_token      = COALESCE(new.botToken, bot_registry.bot_token),
+            base_url       = COALESCE(new.baseUrl, bot_registry.base_url),
+            last_active_at = CURRENT_TIMESTAMP,
+            last_login_at  = CURRENT_TIMESTAMP
     </insert>
 
     <select id="findAll" resultType="map">
@@ -34,7 +35,7 @@
 
     <update id="updateActiveAt">
         UPDATE bot_registry
-        SET last_active_at = datetime('now', 'localtime')
+        SET last_active_at = CURRENT_TIMESTAMP
         WHERE bot_id = #{botId}
     </update>
 

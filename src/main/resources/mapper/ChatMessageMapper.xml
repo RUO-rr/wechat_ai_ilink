@@ -20,14 +20,15 @@
     </delete>
 
     <delete id="trimOldMessages">
-        DELETE FROM chat_message
-        WHERE bot_id = #{botId} AND user_id = #{userId}
-          AND id NOT IN (
-              SELECT id FROM chat_message
-              WHERE bot_id = #{botId} AND user_id = #{userId}
-              ORDER BY id DESC
-              LIMIT #{keepCount}
-          )
+        DELETE cm FROM chat_message cm
+        LEFT JOIN (
+            SELECT id FROM chat_message
+            WHERE bot_id = #{botId} AND user_id = #{userId}
+            ORDER BY id DESC
+            LIMIT #{keepCount}
+        ) keep ON cm.id = keep.id
+        WHERE cm.bot_id = #{botId} AND cm.user_id = #{userId}
+          AND keep.id IS NULL
     </delete>
 
 </mapper>

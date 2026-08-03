@@ -1,26 +1,24 @@
 CREATE TABLE IF NOT EXISTS chat_message (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    bot_id      TEXT    NOT NULL DEFAULT 'legacy',
-    user_id     TEXT    NOT NULL,
-    role        TEXT    NOT NULL,
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    bot_id       VARCHAR(64)  NOT NULL DEFAULT 'legacy',
+    user_id      VARCHAR(128) NOT NULL,
+    role         VARCHAR(32)  NOT NULL,
     content     TEXT,
     rich_content TEXT,
     metadata    TEXT,
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_chat_message_bot_user ON chat_message(bot_id, user_id);
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_chat_message_bot_user (bot_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bot_registry (
-    bot_id          TEXT PRIMARY KEY,
-    label           TEXT,
-    wechat_user_id  TEXT,
-    wechat_bot_id   TEXT,
-    bot_token       TEXT,
-    base_url        TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    last_active_at  TEXT,
-    last_login_at   TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_bot_registry_wechat_user ON bot_registry(wechat_user_id);
+    bot_id          VARCHAR(64)  PRIMARY KEY,
+    label           VARCHAR(128),
+    wechat_user_id  VARCHAR(128),
+    wechat_bot_id   VARCHAR(128),
+    bot_token       VARCHAR(512),
+    base_url        VARCHAR(255),
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_active_at  DATETIME NULL DEFAULT NULL,
+    last_login_at   DATETIME NULL DEFAULT NULL,
+    KEY idx_bot_registry_wechat_user (wechat_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
