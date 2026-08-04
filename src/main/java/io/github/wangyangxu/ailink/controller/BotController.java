@@ -78,9 +78,15 @@ public class BotController {
     @PostMapping("/{botId}/qr/refresh")
     public Map<String, Object> refreshQr(@PathVariable String botId) {
         BotInstance bot = botManager.getBot(botId);
-        if (bot == null) return Map.of("error", "Bot 不存在: " + botId);
-        botManager.loginBotAsync(botId);
-        return Map.of("success", true, "botId", botId, "message", "正在重新生成二维码");
+        if (bot == null) return Map.of("success", false, "error", "Bot 不存在: " + botId);
+        try {
+            // 强制重新扫码：忽略保存的 LoginContext，跳过免扫码恢复，直接生成新二维码
+            botManager.loginBotAsync(botId, true);
+            return Map.of("success", true, "botId", botId, "message", "正在强制重新扫码，请稍候");
+        } catch (IllegalStateException e) {
+            // 并发保护：已有登录流程进行中，提示用户稍候
+            return Map.of("success", false, "botId", botId, "error", e.getMessage());
+        }
     }
 
     /** 手动销毁 Bot */

@@ -6,6 +6,8 @@ import io.github.wangyangxu.ailink.model.BotInstance;
 import io.github.wangyangxu.ailink.model.BotLifecycleState;
 import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.ILinkClientBuilder;
+import com.github.wechat.ilink.sdk.core.listener.OnDisconnectListener;
+import com.github.wechat.ilink.sdk.core.listener.OnHeartbeatListener;
 import com.github.wechat.ilink.sdk.core.listener.OnLoginListener;
 import com.github.wechat.ilink.sdk.core.listener.OnMessageListener;
 import com.github.wechat.ilink.sdk.core.login.LoginContext;
@@ -21,6 +23,8 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
 /**
@@ -53,6 +57,12 @@ public class BotManager {
 
     /** 消息回调 */
     private volatile BiConsumer<String, WeixinMessage> messageHandler;
+
+    /** 心跳连续失败阈值：连续 N 次失败触发降级恢复 */
+    private static final int HEARTBEAT_FAIL_THRESHOLD = 3;
+
+    /** 心跳连续失败计数（botId → 次数），onHeartbeatSuccess 时清零 */
+    private final ConcurrentHashMap<String, AtomicInteger> heartbeatFailCount = new ConcurrentHashMap<>();
 
     public BotManager(BotConfiguration botConfig, BotRegistryMapper botRegistryMapper,
                        BotAlertService alertService) {
@@ -91,7 +101,11 @@ public class BotManager {
             }
             // 恢复后自动重新登录所有 Bot
             for (BotInstance bot : bots.values()) {
-                loginBotAsync(bot.getBotId());
+                try {
+                    loginBotAsync(bot.getBotId());
+                } catch (Exception e) {
+                    log.error("恢复 Bot {} 登录失败", bot.getBotId(), e);
+                }
             }
         } catch (Exception e) {
             log.error("从 DB 恢复 Bot 失败", e);
@@ -143,68 +157,119 @@ public class BotManager {
         return botId;
     }
 
-    /** 异步登录指定 Bot */
+    /** 异步登录指定 Bot（默认尝试免扫码恢复） */
     public void loginBotAsync(String botId) {
+        loginBotAsync(botId, false);
+    }
+
+    /**
+     * 异步登录指定 Bot —— 所有登录/恢复场景的统一入口（创建、启动恢复、强制刷新、断线/心跳降级）。
+     *
+     * @param forceNewQr true=强制重新扫码：忽略保存的 LoginContext，跳过免扫码恢复，直接生成新二维码
+     * @throws IllegalStateException 该 Bot 已有登录流程进行中（并发保护，调用方应提示用户稍候）
+     */
+    public void loginBotAsync(String botId, boolean forceNewQr) {
         BotInstance bot = bots.get(botId);
         if (bot == null) throw new IllegalArgumentException("Bot 不存在: " + botId);
 
-        bot.setState(BotLifecycleState.UNINITIALIZED);
-        bot.getExecutor().submit(() -> doLogin(bot));
+        if (!bot.tryBeginLogin()) {
+            throw new IllegalStateException("该 Bot 正在登录中，请稍候重试");
+        }
+        bot.getExecutor().submit(() -> {
+            try {
+                doLogin(bot, forceNewQr);
+            } finally {
+                bot.endLogin();
+            }
+        });
     }
 
-    private void doLogin(BotInstance bot) {
-        MDC.put("botId", bot.getBotId());
+    /**
+     * 登录核心流程。持有 Bot 级 ReentrantLock，保证
+     * "旧 client 关闭 + 新 client 构建/登录" 原子化（同一锁保护区段）。
+     */
+    private void doLogin(BotInstance bot, boolean forceNewQr) {
+        ReentrantLock loginLock = bot.getLoginLock();
+        loginLock.lock();
         try {
-            ILinkClientBuilder builder = ILinkClient.builder()
-                    .onLogin(new BotLoginListener(bot))
-                    .onMessage(new BotMessageListener(bot));
-
-            // Q4-B 最小方案：如果 Bot 已有历史 botToken，尝试通过 LoginContext 免扫码恢复
-            if (bot.hasWechatIdentity()) {
-                LoginContext savedCtx = new LoginContext(
-                        bot.getBotToken(), bot.getWechatUserId(),
-                        bot.getWechatBotId(), bot.getBaseUrl());
-                builder.loginContext(savedCtx);
-                log.info("Bot {} 使用历史 LoginContext 尝试免扫码恢复", bot.getBotId());
-            }
-
-            ILinkClient client = builder.build();
-            bot.setClient(client);
-
-            // 如果 SDK 从 LoginContext 成功恢复了登录态（token 未过期），跳过 QR 流程
-            if (client.isLoggedIn()) {
-                bot.setState(BotLifecycleState.ONLINE);
-                bot.setLastLoginAt(Instant.now());
-                log.info("Bot {} 免扫码恢复成功, wechatUserId={}", bot.getBotId(), bot.getWechatUserId());
-                return;
-            }
-
-            // 正常 QR 登录流程
-            bot.setState(BotLifecycleState.QR_READY);
-            String qrCode = client.executeLogin();
-            bot.setQrCode(qrCode);
-            bot.setQrGeneratedAt(Instant.now());
-            log.info("Bot {} 二维码已生成，请通过管理页面扫码", bot.getBotId());
-
-            // 等待登录完成（onLoginSuccess 回调会注入身份并持久化）
+            MDC.put("botId", bot.getBotId());
             try {
-                client.getLoginFuture().get(botConfig.getLoginTimeout(), TimeUnit.SECONDS);
-                bot.setState(BotLifecycleState.ONLINE);
-                bot.setLastLoginAt(Instant.now());
-                log.info("Bot {} 登录成功, wechatUserId={}", bot.getBotId(), bot.getWechatUserId());
-                alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), true, "OK");
-            } catch (TimeoutException e) {
-                bot.setState(BotLifecycleState.QR_EXPIRED);
-                log.warn("Bot {} 登录超时({}秒)", bot.getBotId(), botConfig.getLoginTimeout());
-                alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), false, "超时");
-                tryReconnect(bot, 3);
+                // ① 关闭旧 client：先置空引用，回调过滤立即生效，防止旧 client 关闭瞬间的回调污染新登录
+                ILinkClient oldClient = bot.getClient();
+                if (oldClient != null) {
+                    log.info("Bot {} 关闭旧客户端，准备重建连接", bot.getBotId());
+                    bot.setClient(null);
+                    closeClientQuietly(oldClient);
+                }
+
+                bot.setState(BotLifecycleState.UNINITIALIZED);
+
+                // ② 注册全部监听器（登录 / 消息 / 断线 / 心跳），构建后绑定 client 实例用于回调过滤
+                BotLoginListener loginListener = new BotLoginListener(bot);
+                BotMessageListener messageListener = new BotMessageListener(bot);
+                BotDisconnectListener disconnectListener = new BotDisconnectListener(bot);
+                BotHeartbeatListener heartbeatListener = new BotHeartbeatListener(bot);
+
+                ILinkClientBuilder builder = ILinkClient.builder()
+                        .onLogin(loginListener)
+                        .onMessage(messageListener)
+                        .onDisconnect(disconnectListener)
+                        .onHeartbeat(heartbeatListener);
+
+                // ③ 免扫码恢复仅在非强制刷新时尝试
+                if (!forceNewQr && bot.hasWechatIdentity()) {
+                    LoginContext savedCtx = new LoginContext(
+                            bot.getBotToken(), bot.getWechatUserId(),
+                            bot.getWechatBotId(), bot.getBaseUrl());
+                    builder.loginContext(savedCtx);
+                    log.info("Bot {} 使用历史 LoginContext 尝试免扫码恢复", bot.getBotId());
+                }
+
+                ILinkClient client = builder.build();
+                loginListener.bind(client);
+                messageListener.bind(client);
+                disconnectListener.bind(client);
+                heartbeatListener.bind(client);
+                bot.setClient(client);
+
+                // ④ 免扫码恢复成功 → 直接上线（强制刷新路径跳过此判断，直接进二维码流程）
+                if (!forceNewQr && client.isLoggedIn()) {
+                    bot.setState(BotLifecycleState.ONLINE);
+                    bot.setLastLoginAt(Instant.now());
+                    resetHeartbeatFailCount(bot.getBotId());
+                    log.info("Bot {} 免扫码恢复成功, wechatUserId={}", bot.getBotId(), bot.getWechatUserId());
+                    return;
+                }
+
+                // ⑤ 二维码登录流程
+                bot.setState(BotLifecycleState.QR_READY);
+                String qrCode = client.executeLogin();
+                bot.setQrCode(qrCode);
+                bot.setQrGeneratedAt(Instant.now());
+                log.info("Bot {} 二维码已生成，请通过管理页面扫码", bot.getBotId());
+
+                try {
+                    client.getLoginFuture().get(botConfig.getLoginTimeout(), TimeUnit.SECONDS);
+                    bot.setState(BotLifecycleState.ONLINE);
+                    bot.setLastLoginAt(Instant.now());
+                    resetHeartbeatFailCount(bot.getBotId());
+                    log.info("Bot {} 登录成功, wechatUserId={}", bot.getBotId(), bot.getWechatUserId());
+                    alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), true, "OK");
+                } catch (TimeoutException e) {
+                    bot.setState(BotLifecycleState.QR_EXPIRED);
+                    log.warn("Bot {} 登录超时({}秒)", bot.getBotId(), botConfig.getLoginTimeout());
+                    alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), false, "超时");
+                    tryReconnect(bot, 3);
+                }
+            } catch (Exception e) {
+                bot.setState(BotLifecycleState.ERROR);
+                log.error("Bot {} 登录失败", bot.getBotId(), e);
+                alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), false, e.getMessage());
+            } finally {
+                MDC.remove("botId");
             }
-        } catch (Exception e) {
-            bot.setState(BotLifecycleState.ERROR);
-            log.error("Bot {} 登录失败", bot.getBotId(), e);
-            alertService.auditLogin(bot.getBotId(), bot.getWechatUserId(), false, e.getMessage());
         } finally {
-            MDC.remove("botId");
+            loginLock.unlock();
         }
     }
 
@@ -213,52 +278,91 @@ public class BotManager {
         BotInstance bot = bots.remove(botId);
         if (bot != null) {
             bot.shutdown();
+            heartbeatFailCount.remove(botId);
             try { botRegistryMapper.delete(botId); } catch (Exception ignored) {}
             alertService.auditDestroy(botId, bot.getWechatUserId());
             log.info("Bot {} 已关闭", botId);
         }
     }
 
-    /** 断线重连：最多 retryMax 次，间隔 5 秒 */
+    /**
+     * 断线重连：最多 retryMax 次，间隔 5 秒。
+     * 同步执行（由 doLogin 在同一锁/占用标记内调用），避免与新的登录流程并发打架。
+     */
     private void tryReconnect(BotInstance bot, int retryMax) {
-        bot.getExecutor().submit(() -> {
-            for (int i = 1; i <= retryMax; i++) {
-                try {
-                    log.info("Bot {} 重连尝试 {}/{}", bot.getBotId(), i, retryMax);
-                    Thread.sleep(5000);
+        for (int i = 1; i <= retryMax; i++) {
+            try {
+                log.info("Bot {} 重连尝试 {}/{}", bot.getBotId(), i, retryMax);
+                Thread.sleep(5000);
 
-                    // 读一次、存局部变量，后续全部用它，避免多次 volatile 读到不同值
-                    ILinkClient client = bot.getClient();
-                    if (client == null) {
-                        log.warn("Bot {} client 已为空（可能已被销毁），停止重连", bot.getBotId());
-                        return;
-                    }
-
-                    bot.setState(BotLifecycleState.UNINITIALIZED);
-                    String qr = client.executeLogin();
-                    bot.setQrCode(qr);
-                    bot.setQrGeneratedAt(Instant.now());
-                    bot.setState(BotLifecycleState.QR_READY);
-                    log.info("Bot {} 重连二维码已生成(尝试 {}/{})", bot.getBotId(), i, retryMax);
-
-                    client.getLoginFuture().get(botConfig.getLoginTimeout(), TimeUnit.SECONDS);
-                    bot.setState(BotLifecycleState.ONLINE);
-                    bot.setLastLoginAt(Instant.now());
-                    log.info("Bot {} 重连成功", bot.getBotId());
+                // 读一次、存局部变量，后续全部用它，避免多次 volatile 读到不同值
+                ILinkClient client = bot.getClient();
+                if (client == null) {
+                    log.warn("Bot {} client 已为空（可能已被销毁），停止重连", bot.getBotId());
                     return;
-                } catch (InterruptedException e) {
-                    // shutdownNow() 中断了线程，说明 Bot 已被销毁，直接退出
-                    Thread.currentThread().interrupt();
-                    log.info("Bot {} 重连线程被中断，退出", bot.getBotId());
-                    return;
-                } catch (Exception e) {
-                    log.warn("Bot {} 重连失败 {}/{}: {}", bot.getBotId(), i, retryMax, e.getMessage());
                 }
+
+                bot.setState(BotLifecycleState.UNINITIALIZED);
+                String qr = client.executeLogin();
+                bot.setQrCode(qr);
+                bot.setQrGeneratedAt(Instant.now());
+                bot.setState(BotLifecycleState.QR_READY);
+                log.info("Bot {} 重连二维码已生成(尝试 {}/{})", bot.getBotId(), i, retryMax);
+
+                client.getLoginFuture().get(botConfig.getLoginTimeout(), TimeUnit.SECONDS);
+                bot.setState(BotLifecycleState.ONLINE);
+                bot.setLastLoginAt(Instant.now());
+                resetHeartbeatFailCount(bot.getBotId());
+                log.info("Bot {} 重连成功", bot.getBotId());
+                return;
+            } catch (InterruptedException e) {
+                // shutdownNow() 中断了线程，说明 Bot 已被销毁，直接退出
+                Thread.currentThread().interrupt();
+                log.info("Bot {} 重连线程被中断，退出", bot.getBotId());
+                return;
+            } catch (Exception e) {
+                log.warn("Bot {} 重连失败 {}/{}: {}", bot.getBotId(), i, retryMax, e.getMessage());
             }
-            bot.setState(BotLifecycleState.ERROR);
-            alertService.alertReconnectFailed(bot.getBotId());
-            log.error("Bot {} 重连 {} 次全部失败", bot.getBotId(), retryMax);
-        });
+        }
+        bot.setState(BotLifecycleState.ERROR);
+        alertService.alertReconnectFailed(bot.getBotId());
+        log.error("Bot {} 重连 {} 次全部失败", bot.getBotId(), retryMax);
+    }
+
+    /** 关闭 client（SDK 无超时重载，本地操作 + 回调过滤覆盖竞态） */
+    private void closeClientQuietly(ILinkClient client) {
+        try {
+            client.close();
+        } catch (Exception e) {
+            log.warn("关闭旧 client 异常: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 降级恢复（SDK 会话丢失触发）：标记 DISCONNECTED → 免扫码恢复。
+     * 复用统一登录入口 loginBotAsync(botId, false)，并发保护由 CAS 标志承担；
+     * 若免扫码恢复失败，doLogin 内部会自然进入二维码流程，管理员扫码即可恢复。
+     */
+    private void triggerDegradation(BotInstance bot, String reason) {
+        String botId = bot.getBotId();
+        BotLifecycleState state = bot.getState();
+        // 仅在 ONLINE / DISCONNECTED 时触发，避免在扫码等待等阶段误触发
+        if (state != BotLifecycleState.ONLINE && state != BotLifecycleState.DISCONNECTED) {
+            log.info("Bot {} 状态 {}，跳过降级触发(reason={})", botId, state, reason);
+            return;
+        }
+        bot.setState(BotLifecycleState.DISCONNECTED);
+        alertService.alertSessionLost(botId, reason);
+        log.warn("Bot {} 触发降级恢复 reason={}", botId, reason);
+        try {
+            loginBotAsync(botId, false);
+        } catch (IllegalStateException e) {
+            log.warn("Bot {} 降级恢复被跳过（登录流程已在进行中）: {}", botId, e.getMessage());
+        }
+    }
+
+    private void resetHeartbeatFailCount(String botId) {
+        heartbeatFailCount.computeIfAbsent(botId, k -> new AtomicInteger()).set(0);
     }
 
     // ==================== 查询 ====================
@@ -290,10 +394,20 @@ public class BotManager {
 
     private class BotLoginListener implements OnLoginListener {
         private final BotInstance bot;
+        private volatile ILinkClient boundClient;
+
         BotLoginListener(BotInstance bot) { this.bot = bot; }
+
+        void bind(ILinkClient client) { this.boundClient = client; }
+
+        /** 回调过滤：仅处理当前 client 的回调，忽略旧 client 关闭瞬间的残留回调 */
+        boolean isCurrent() {
+            return boundClient != null && boundClient == bot.getClient();
+        }
 
         @Override
         public void onLoginSuccess(LoginContext ctx) {
+            if (!isCurrent()) return;
             // 注入 SDK 返回的真实微信身份
             String newWechatUserId = ctx.getUserId();
             String newWechatBotId = ctx.getBotId();
@@ -326,6 +440,7 @@ public class BotManager {
 
         @Override
         public void onLoginFailure(Throwable t) {
+            if (!isCurrent()) return;
             bot.setState(BotLifecycleState.ERROR);
             log.error("Bot {} 登录失败回调", bot.getBotId(), t);
         }
@@ -333,9 +448,19 @@ public class BotManager {
 
     private class BotMessageListener implements OnMessageListener {
         private final BotInstance bot;
+        private volatile ILinkClient boundClient;
+
         BotMessageListener(BotInstance bot) { this.bot = bot; }
+
+        void bind(ILinkClient client) { this.boundClient = client; }
+
+        boolean isCurrent() {
+            return boundClient != null && boundClient == bot.getClient();
+        }
+
         @Override
         public void onMessages(List<WeixinMessage> messages) {
+            if (!isCurrent()) return;
             BiConsumer<String, WeixinMessage> handler = messageHandler;
             if (handler == null) {
                 log.warn("Bot {} 收到消息但未注册处理器", bot.getBotId());
@@ -343,6 +468,93 @@ public class BotManager {
             }
             for (WeixinMessage msg : messages) {
                 handler.accept(bot.getBotId(), msg);
+            }
+        }
+    }
+
+    /**
+     * SDK 底层断线/重连回调 —— 会话丢失的可靠信号来源。
+     * onReconnectFailed 表示 SDK 自动重连彻底失败（token 很可能已死），触发降级恢复。
+     */
+    private class BotDisconnectListener implements OnDisconnectListener {
+        private final BotInstance bot;
+        private volatile ILinkClient boundClient;
+
+        BotDisconnectListener(BotInstance bot) { this.bot = bot; }
+
+        void bind(ILinkClient client) { this.boundClient = client; }
+
+        boolean isCurrent() {
+            return boundClient != null && boundClient == bot.getClient();
+        }
+
+        @Override
+        public void onDisconnect(Throwable t) {
+            if (!isCurrent()) return;
+            bot.setState(BotLifecycleState.DISCONNECTED);
+            log.warn("Bot {} 连接断开: {}", bot.getBotId(), t != null ? t.getMessage() : "unknown");
+        }
+
+        @Override
+        public void onReconnectStart(int attempt) {
+            if (!isCurrent()) return;
+            log.info("Bot {} SDK 自动重连开始(第{}次)", bot.getBotId(), attempt);
+        }
+
+        @Override
+        public void onReconnectSuccess() {
+            if (!isCurrent()) return;
+            bot.setState(BotLifecycleState.ONLINE);
+            resetHeartbeatFailCount(bot.getBotId());
+            log.info("Bot {} SDK 自动重连成功", bot.getBotId());
+        }
+
+        @Override
+        public void onReconnectFailed(Throwable t) {
+            if (!isCurrent()) return;
+            log.error("Bot {} SDK 自动重连失败，触发降级恢复: {}",
+                    bot.getBotId(), t != null ? t.getMessage() : "");
+            triggerDegradation(bot, "reconnect_failed");
+        }
+    }
+
+    /**
+     * SDK 底层心跳回调 —— 连接存活的辅助信号。
+     * 连续 {@link #HEARTBEAT_FAIL_THRESHOLD} 次失败视为会话丢失，触发降级恢复。
+     */
+    private class BotHeartbeatListener implements OnHeartbeatListener {
+        private final BotInstance bot;
+        private volatile ILinkClient boundClient;
+
+        BotHeartbeatListener(BotInstance bot) { this.bot = bot; }
+
+        void bind(ILinkClient client) { this.boundClient = client; }
+
+        boolean isCurrent() {
+            return boundClient != null && boundClient == bot.getClient();
+        }
+
+        @Override
+        public void onHeartbeatSuccess() {
+            if (!isCurrent()) return;
+            AtomicInteger count = heartbeatFailCount.computeIfAbsent(bot.getBotId(), k -> new AtomicInteger());
+            int prev = count.getAndSet(0);
+            if (prev >= 1) {
+                log.info("Bot {} 心跳恢复，失败计数清零", bot.getBotId());
+            }
+        }
+
+        @Override
+        public void onHeartbeatFailure(Throwable t) {
+            if (!isCurrent()) return;
+            AtomicInteger count = heartbeatFailCount.computeIfAbsent(bot.getBotId(), k -> new AtomicInteger());
+            int fails = count.incrementAndGet();
+            log.warn("Bot {} 心跳失败 {}/{}: {}",
+                    bot.getBotId(), fails, HEARTBEAT_FAIL_THRESHOLD,
+                    t != null ? t.getMessage() : "");
+            if (fails >= HEARTBEAT_FAIL_THRESHOLD) {
+                count.set(0); // 防止重复触发
+                triggerDegradation(bot, "heartbeat_failed");
             }
         }
     }
@@ -360,6 +572,7 @@ public class BotManager {
         } catch (Exception e) {
             log.warn("Bot 关闭超时", e);
         }
+        heartbeatFailCount.clear();
         bots.clear();
     }
 }

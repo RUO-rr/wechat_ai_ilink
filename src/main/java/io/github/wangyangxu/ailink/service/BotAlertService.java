@@ -48,6 +48,11 @@ public class BotAlertService {
         alertLog.error("type=RECONNECT_FAILED botId={} severity=CRITICAL message=\"Bot 重连全部失败，已进入 ERROR 状态\"", botId);
     }
 
+    /** 会话丢失告警：SDK 断线重连失败 / 心跳连续失败，已触发降级恢复 */
+    public void alertSessionLost(String botId, String reason) {
+        alertLog.error("type=SESSION_LOST botId={} reason={} severity=CRITICAL message=\"Bot 会话丢失，已触发降级恢复\"", botId, reason);
+    }
+
     public void alertOffline(String botId, long offlineMinutes) {
         alertLog.warn("type=OFFLINE botId={} offlineMinutes={} severity=WARN", botId, offlineMinutes);
         if (offlineMinutes >= 5) {

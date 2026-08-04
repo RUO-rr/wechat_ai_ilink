@@ -5,6 +5,8 @@ import com.github.wechat.ilink.sdk.ILinkClient;
 import java.time.Instant;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Bot 实例模型 —— 每个扫码登录的微信用户拥有一个独立的 BotInstance。
@@ -60,6 +62,12 @@ public class BotInstance {
 
     /** 独立线程池（core=2, max=4） */
     private final ExecutorService executor;
+
+    /** 登录流程进行中标记（CAS，防止重复触发登录） */
+    private final AtomicBoolean loginInProgress = new AtomicBoolean(false);
+
+    /** 登录串行化锁：旧 client 关闭 + 新 client 构建/登录 原子化 */
+    private final ReentrantLock loginLock = new ReentrantLock();
 
     /**
      * 创建 Bot 实例（仅系统标识，身份登录后注入）。
@@ -135,6 +143,24 @@ public class BotInstance {
     public void setLastLoginAt(Instant lastLoginAt) { this.lastLoginAt = lastLoginAt; }
     public Instant getCreatedAt() { return createdAt; }
     public ExecutorService getExecutor() { return executor; }
+
+    /** 尝试占用登录流程（失败表示已有登录流程进行中） */
+    public boolean tryBeginLogin() {
+        return loginInProgress.compareAndSet(false, true);
+    }
+
+    /** 登录流程结束，释放占用 */
+    public void endLogin() {
+        loginInProgress.set(false);
+    }
+
+    public boolean isLoginInProgress() {
+        return loginInProgress.get();
+    }
+
+    public ReentrantLock getLoginLock() {
+        return loginLock;
+    }
 
     public void shutdown() {
         executor.shutdownNow();
