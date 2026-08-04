@@ -62,7 +62,7 @@
     <div class="card">
         <h3>创建新 Bot</h3>
         <div class="form-row">
-            <input type="text" id="userIdInput" placeholder="输入用户标识（如 wxid_abc123）" />
+            <input type="text" id="labelInput" placeholder="标签（可选），如：办公机" />
             <button class="btn-primary" onclick="createBot()">创建并登录</button>
         </div>
     </div>
@@ -113,14 +113,15 @@ function renderQrImage(text) {
 }
 
 async function createBot() {
-    const userId = document.getElementById('userIdInput').value.trim();
-    if (!userId) { showToast('请输入用户标识', 'error'); return; }
+    const label = document.getElementById('labelInput').value.trim();
+    let url = API + '/bot/create';
+    if (label) { url += '?label=' + encodeURIComponent(label); }
     try {
-        const res = await fetch(API + '/bot/create?userId=' + encodeURIComponent(userId), { method: 'POST' });
+        const res = await fetch(url, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
             showToast('Bot 创建成功，正在生成二维码...', 'success');
-            document.getElementById('userIdInput').value = '';
+            document.getElementById('labelInput').value = '';
             // 自动弹出二维码弹窗并轮询等待
             openQrModal(data.botId);
             pollQrCode(data.botId);
@@ -222,8 +223,13 @@ function closeQr() {
 
 async function refreshQr(botId) {
     try {
-        await fetch(API + '/bot/' + botId + '/qr/refresh', { method: 'POST' });
-        showToast('正在重新生成二维码...', 'success');
+        const res = await fetch(API + '/bot/' + botId + '/qr/refresh', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.error || '刷新失败', 'error');
+            return;
+        }
+        showToast('正在强制重新扫码...', 'success');
         // 自动弹出并轮询新二维码
         openQrModal(botId);
         pollQrCode(botId);
