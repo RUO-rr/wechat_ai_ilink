@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.wangyangxu.ailink.mapper.AgentMemoryMapper">
+
+    <insert id="insert" parameterType="io.github.wangyangxu.ailink.model.AgentMemory" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO agent_memory (user_id, memory_type, dimension, content, source_message_id, status, supersedes_id)
+        VALUES (#{userId}, #{memoryType}, #{dimension}, #{content}, #{sourceMessageId}, #{status}, #{supersedesId})
+    </insert>
+
+    <select id="findLatestActiveByDimension" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId} AND dimension = #{dimension} AND status = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findActiveFacts" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId}
+          AND memory_type IN ('fact', 'preference')
+          AND status = 'active'
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findLatestActiveSummary" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId}
+          AND memory_type = 'summary'
+          AND status = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findActiveNotes" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId}
+          AND memory_type = 'note'
+          AND status = 'active'
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findByUserAndDimension" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId} AND dimension = #{dimension}
+        ORDER BY id ASC
+    </select>
+
+    <update id="markSuperseded">
+        UPDATE agent_memory
+        SET status = 'superseded', updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="markDeleted">
+        UPDATE agent_memory
+        SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id} AND user_id = #{userId}
+    </update>
+
+</mapper>

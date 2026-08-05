@@ -25,6 +25,8 @@ public class ChatTextService {
     @Autowired private SpeechTextGenerationService speechService;
     @Autowired private FunctionCallingOrchestrator fcOrchestrator;
     @Autowired private IintService iintService;
+    @Autowired private MemoryService memoryService;
+    @Autowired private MemoryOrchestrator memoryOrchestrator;
 
     // ======================== 意图检测 ========================
 
@@ -53,10 +55,8 @@ public class ChatTextService {
         history.getOrCreate(userId);
         history.addMessage(userId, "user", userMessage);
 
-        List<Map<String, Object>> messages = new ArrayList<>();
-        for (Map<String, Object> msg : history.getSnapshot(userId)) {
-            messages.add(new HashMap<>(msg));
-        }
+        // 1.1 注入长期记忆（摘要槽 / 记忆槽 / 笔记槽）
+        List<Map<String, Object>> messages = buildMessagesWithMemory(userId);
 
         // 2. 委托 FC 编排引擎执行
         FunctionCallingOrchestrator.Result result = fcOrchestrator.execute(messages, BotContext.currentBotId(), userId);
@@ -71,8 +71,44 @@ public class ChatTextService {
         history.addMessage(userId, "assistant", result.assistantContent());
         history.trim(userId);
 
+        // 6. 记忆异步处理（提取 / 滚动摘要），不阻塞回复
+        String botId = BotContext.currentBotId();
+        memoryOrchestrator.afterReply(botId != null ? botId : "legacy", userId, messages);
+
         log.info("文本对话完成 userId={}", userId);
         return result.assistantContent();
+    }
+
+    /**
+     * 构建消息列表并注入长期记忆。
+     * 注入位置：system 之后；三个槽位相互独立，不抢占配额。
+     */
+    private List<Map<String, Object>> buildMessagesWithMemory(String userId) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        for (Map<String, Object> msg : history.getSnapshot(userId)) {
+            messages.add(new HashMap<>(msg));
+        }
+
+        MemoryService.MemoryInjection injection = memoryService.getInjection(userId);
+        int insertAt = (!messages.isEmpty() && "system".equals(messages.get(0).get("role"))) ? 1 : 0;
+
+        if (injection.summary() != null && !injection.summary().isBlank()) {
+            messages.add(insertAt++, systemMsg("[历史摘要] " + injection.summary()));
+        }
+        if (injection.facts() != null && !injection.facts().isEmpty()) {
+            messages.add(insertAt++, systemMsg("[用户记忆]\n- " + String.join("\n- ", injection.facts())));
+        }
+        if (injection.notes() != null && !injection.notes().isEmpty()) {
+            messages.add(insertAt, systemMsg("[用户笔记]\n- " + String.join("\n- ", injection.notes())));
+        }
+        return messages;
+    }
+
+    private static Map<String, Object> systemMsg(String content) {
+        Map<String, Object> msg = new HashMap<>();
+        msg.put("role", "system");
+        msg.put("content", content);
+        return msg;
     }
 
     // ======================== 上下文持久化 ========================

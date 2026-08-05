@@ -31,4 +31,8 @@
           AND keep.id IS NULL
     </delete>
 
+    <select id="findLatestId" resultType="java.lang.Long">
+        SELECT MAX(id) FROM chat_message WHERE bot_id = #{botId} AND user_id = #{userId}
+    </select>
+
 </mapper>

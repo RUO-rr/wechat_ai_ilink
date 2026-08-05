@@ -25,4 +25,7 @@ public interface ChatMessageMapper {
      * 裁剪：保留最新 keepCount 条，删除更早的记录。
      */
     void trimOldMessages(@Param("botId") String botId, @Param("userId") String userId, @Param("keepCount") int keepCount);
+
+    /** 查询某用户在某 Bot 下的最新一条消息 ID（记忆溯源用） */
+    Long findLatestId(@Param("botId") String botId, @Param("userId") String userId);
 }
