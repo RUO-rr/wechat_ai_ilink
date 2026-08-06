@@ -38,6 +38,7 @@ voice_cache/
 *.db
 *.sqlite
 *.sqlite3
+dump.rdb
 
 # ===== 本地环境与工具配置 =====
 .env
