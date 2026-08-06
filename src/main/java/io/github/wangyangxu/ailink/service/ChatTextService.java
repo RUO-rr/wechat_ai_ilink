@@ -51,10 +51,18 @@ public class ChatTextService {
     // ======================== 主聊天流程 ========================
 
     public String chat(String userId, String userMessage) {
-        // 1. 准备消息列表
         history.getOrCreate(userId);
         history.addMessage(userId, "user", userMessage);
+        return doChat(userId);
+    }
 
+    /** 兜底：用户消息已被失败的服务写入历史（如画图），避免重复入史 */
+    public String chatFallback(String userId) {
+        history.getOrCreate(userId);
+        return doChat(userId);
+    }
+
+    private String doChat(String userId) {
         // 1.1 注入长期记忆（摘要槽 / 记忆槽 / 笔记槽）
         List<Map<String, Object>> messages = buildMessagesWithMemory(userId);
 
@@ -68,15 +76,25 @@ public class ChatTextService {
         persistToolMessages(userId, messages);
 
         // 5. 存入助手回复
-        history.addMessage(userId, "assistant", result.assistantContent());
-        history.trim(userId);
+        String assistantContent = result.assistantContent();
+        // 意图协议标记（[VOICE] / [VOICE_SWITCH:xx]）不入历史，由 MainController 路由
+        if (!isIntentMarker(assistantContent)) {
+            history.addMessage(userId, "assistant", assistantContent);
+            history.trim(userId);
+        }
 
         // 6. 记忆异步处理（提取 / 滚动摘要），不阻塞回复
         String botId = BotContext.currentBotId();
         memoryOrchestrator.afterReply(botId != null ? botId : "legacy", userId, messages);
 
         log.info("文本对话完成 userId={}", userId);
-        return result.assistantContent();
+        return assistantContent;
+    }
+
+    /** 判断 FC 返回是否为意图协议标记（弱信号意图由 LLM 在 FC 首轮识别） */
+    public static boolean isIntentMarker(String content) {
+        return content != null
+                && (content.startsWith("[VOICE]") || content.startsWith("[VOICE_SWITCH:"));
     }
 
     /**

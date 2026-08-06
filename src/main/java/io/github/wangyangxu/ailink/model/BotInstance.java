@@ -1,10 +1,16 @@
 package io.github.wangyangxu.ailink.model;
 
 import com.github.wechat.ilink.sdk.ILinkClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -23,6 +29,11 @@ import java.util.concurrent.locks.ReentrantLock;
  * 与 {@code wechatUserId} 天然对齐（都是微信 ID 体系）。</p>
  */
 public class BotInstance {
+
+    private static final Logger log = LoggerFactory.getLogger(BotInstance.class);
+
+    /** 消息处理队列容量：LLM 慢时防止无界积压 */
+    private static final int MESSAGE_QUEUE_CAPACITY = 100;
 
     /** 系统内部唯一标识，创建时分配，重启后复用 */
     private final String botId;
@@ -63,6 +74,9 @@ public class BotInstance {
     /** 独立线程池（core=2, max=4） */
     private final ExecutorService executor;
 
+    /** 消息处理执行器：单线程保序，与 SDK 轮询线程解耦（修复"处理慢拖累轮询"） */
+    private final ExecutorService messageExecutor;
+
     /** 登录流程进行中标记（CAS，防止重复触发登录） */
     private final AtomicBoolean loginInProgress = new AtomicBoolean(false);
 
@@ -84,6 +98,15 @@ public class BotInstance {
             t.setDaemon(true);
             return t;
         });
+        this.messageExecutor = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(MESSAGE_QUEUE_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "msg-" + botId);
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     /** 便捷构造，无标签 */
@@ -162,8 +185,22 @@ public class BotInstance {
         return loginLock;
     }
 
+    /**
+     * 提交消息处理任务。单线程保序；队列满时丢弃并告警，不让积压拖垮轮询线程。
+     */
+    public boolean submitMessage(Runnable task) {
+        try {
+            messageExecutor.submit(task);
+            return true;
+        } catch (RejectedExecutionException e) {
+            log.warn("Bot {} 消息队列已满({})，丢弃消息", botId, MESSAGE_QUEUE_CAPACITY);
+            return false;
+        }
+    }
+
     public void shutdown() {
         executor.shutdownNow();
+        messageExecutor.shutdownNow();
         if (client != null) {
             try { client.close(); } catch (Exception ignored) {}
         }

@@ -57,7 +57,8 @@ public class ChatDrawService {
 
     /**
      * 文生图全流程：等待提示 → 存用户消息 → 优化prompt → 调绘图API → 发图片 → 存摘要。
-     * 消息发送由本方法自行处理，返回 null 表示 MainController 无需再发文字回复。
+     * 消息发送由本方法自行处理，成功返回 null（MainController 无需再发文字回复）；
+     * 失败抛异常，由调用方提示原因并回退文本回复。
      */
     public String draw(String userId, String userMessage) {
         // 1. 发送等待提示
@@ -74,8 +75,7 @@ public class ChatDrawService {
         // 3. 调文本模型优化提示词
         String optimizedPrompt = optimizePrompt(userId, userMessage);
         if (optimizedPrompt == null) {
-            trySendError(userId, "提示词优化失败，请重试");
-            return null;
+            throw new RuntimeException("提示词优化失败");
         }
         log.info("优化后的提示词: {}", optimizedPrompt);
 
@@ -85,8 +85,7 @@ public class ChatDrawService {
             imageBytes = callDrawApi(optimizedPrompt);
         } catch (Exception e) {
             log.error("调用绘图 API 失败: {}", e.getMessage(), e);
-            trySendError(userId, "图片生成失败，请重试");
-            return null;
+            throw new RuntimeException("图片生成失败: " + e.getMessage(), e);
         }
 
         // 5. 发送图片
@@ -94,8 +93,7 @@ public class ChatDrawService {
             iintService.sendImage(BotContext.currentBotId(), userId, imageBytes, "generated.png", null);
         } catch (Exception e) {
             log.error("发送图片失败: {}", e.getMessage(), e);
-            trySendError(userId, "图片发送失败，请重试");
-            return null;
+            throw new RuntimeException("图片发送失败: " + e.getMessage(), e);
         }
 
         // 6. 存入历史摘要（不入优化后 prompt）
@@ -239,11 +237,4 @@ public class ChatDrawService {
         return restTemplate.getForObject(URI.create(imageUrl), byte[].class);
     }
 
-    private void trySendError(String userId, String message) {
-        try {
-            iintService.sendText(BotContext.currentBotId(), userId, "【错误】" + message);
-        } catch (Exception ex) {
-            log.error("发送错误提示失败: {}", ex.getMessage());
-        }
-    }
 }

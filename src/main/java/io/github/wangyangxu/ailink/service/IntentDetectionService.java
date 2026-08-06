@@ -1,100 +1,99 @@
 package io.github.wangyangxu.ailink.service;
 
-import io.github.wangyangxu.ailink.client.LlmClient;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * 意图检测服务 —— 判断用户消息的目标：画图/文字/语音/切换音色。
- * 纯 LLM 调用，不修改对话历史。
+ * 意图检测服务 —— 纯强信号关键词硬路由，零 LLM 调用。
+ * <p>
+ * 设计说明：独立意图检测的 LLM 调用已并入 FC 循环（意图协议），
+ * 这里只保留"强信号才路由"的兜底前置：明确的关键词直接分流到
+ * 画图/语音/切换音色，弱信号或不确定的一律返回 "2" 交给 FC/LLM 判断，
+ * 避免"我想画个流程图"这类含"画"字的文本需求被误判。
  */
 @Service
 public class IntentDetectionService {
 
     private static final Logger log = LoggerFactory.getLogger(IntentDetectionService.class);
 
-    private final LlmClient llmClient;
+    /** 强信号画图关键词（保守口径，避免误判） */
+    private static final List<String> DRAW_SIGNALS = List.of(
+            "画一张", "画一幅", "画一只", "帮我画", "帮我生成", "生成图片", "画图", "绘制");
+
+    /** 强信号语音回复关键词 */
+    private static final List<String> VOICE_SIGNALS = List.of(
+            "用语音回复", "语音回答", "语音回复我", "用语音说", "语音告诉我");
+
+    /** 强信号音色切换关键词 */
+    private static final List<String> VOICE_SWITCH_SIGNALS = List.of(
+            "切换音色", "换音色", "切换成", "换成");
+
     private final UserVoiceState userVoiceState;
 
-    @Value("${llm.base-url}")
-    private String baseUrl;
-
-    @Value("${llm.model}")
-    private String model;
-
-    @Value("${llm.api-key}")
-    private String apiKey;
-
-    public IntentDetectionService(LlmClient llmClient, UserVoiceState userVoiceState) {
-        this.llmClient = llmClient;
+    public IntentDetectionService(UserVoiceState userVoiceState) {
         this.userVoiceState = userVoiceState;
     }
 
     /**
-     * @return "1"=画图, "2"=文字回复, "3"=语音回复, "4:音色名"=切换音色
+     * @return "1"=画图, "2"=文字回复(默认), "3"=语音回复, "4:音色名"=切换音色
      */
     public String detect(String userId, String userMessage) {
-        if (baseUrl == null || baseUrl.isBlank() || model == null || model.isBlank()
-                || apiKey == null || apiKey.isBlank()) {
-            log.warn("文本模型未配置，默认走文字回复");
-            return "2";
+        String trimmed = userMessage == null ? "" : userMessage.trim();
+
+        // 音色切换：命中关键词且能解析出已知音色名才路由
+        String voiceName = detectVoiceSwitch(trimmed);
+        if (voiceName != null) {
+            String resolved = userVoiceState.findVoiceId(voiceName);
+            if (resolved != null) {
+                log.info("音色切换硬路由: voiceName={}, resolved={}", voiceName, resolved);
+                return "4:" + voiceName;
+            }
         }
 
-        String voiceNames = String.join("、", userVoiceState.getSupportedVoiceNames());
+        if (containsAny(trimmed, VOICE_SIGNALS)) {
+            log.info("语音回复硬路由");
+            return "3";
+        }
 
-        // 关键词快速路由：表格/Excel/文档类任务不走 LLM 检测，避免误判为画图
-        String trimmed = userMessage.trim();
+        if (containsAny(trimmed, DRAW_SIGNALS)) {
+            log.info("画图硬路由");
+            return "1";
+        }
+
+        // 表格/Excel 类任务直接走文字回复（FC），避免误判
         if (trimmed.contains("表格") || trimmed.contains("excel") || trimmed.contains("xlsx")
                 || trimmed.contains("电子表格") || trimmed.contains("数据表")) {
-            log.debug("关键词命中(表格/Excel)，直接路由到文字回复");
             return "2";
         }
 
-        List<Map<String, String>> messages = new ArrayList<>();
-        Map<String, String> sysMsg = new HashMap<>();
-        sysMsg.put("role", "system");
-        sysMsg.put("content", "请根据用户消息判断意图，只返回以下格式之一：\n"
-                + "1 = 画图\n2 = 文字回复\n3 = 语音回复\n"
-                + "4:音色名 = 切换音色（支持：" + voiceNames + "）\n"
-                + "示例：用户说「切换音色为龙安欢」→ 返回 4:龙安欢\n"
-                + "示例：用户说「用语音回复我」→ 返回 3\n"
-                + "只返回以上格式的纯文本，不要有多余文字、标点或解释。");
-        messages.add(sysMsg);
-
-        Map<String, String> userMsg = new HashMap<>();
-        userMsg.put("role", "user");
-        userMsg.put("content", userMessage);
-        messages.add(userMsg);
-
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", model);
-        requestBody.put("messages", messages);
-        requestBody.put("max_tokens", 100);
-        requestBody.put("temperature", 0);
-
-        try {
-            JsonNode response = llmClient.callChatApi(baseUrl, apiKey, requestBody);
-            JsonNode msgNode = LlmClient.extractMessage(response);
-            String content = LlmClient.extractContentWithReasoningFallback(msgNode);
-
-            log.debug("意图检测结果: userId={}, rawResult={}", userId, content);
-
-            if (content.startsWith("4")) return content;
-            // 使用精确匹配而非 contains，避免 LLM 输出非预期文本（如 "2（文字回复）"）误触发
-            String clean = content.trim();
-            if ("1".equals(clean)) return "1";
-            if ("3".equals(clean)) return "3";
-        } catch (Exception e) {
-            log.error("意图检测失败，默认走文字回复", e);
-        }
         return "2";
+    }
+
+    /**
+     * 从消息中提取音色名：优先匹配"切换音色为X / 换音色为X / 切换成X / 换成X"。
+     * 提取失败返回 null（不路由，交给 FC）。
+     */
+    private static String detectVoiceSwitch(String text) {
+        for (String signal : VOICE_SWITCH_SIGNALS) {
+            int idx = text.indexOf(signal);
+            if (idx < 0) continue;
+            String after = text.substring(idx + signal.length()).trim();
+            // 去掉常见的前置词（为/成/到/用）
+            after = after.replaceFirst("^(为|成|到|用)", "").trim();
+            if (!after.isEmpty()) {
+                return after;
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsAny(String text, List<String> signals) {
+        for (String s : signals) {
+            if (text.contains(s)) return true;
+        }
+        return false;
     }
 }

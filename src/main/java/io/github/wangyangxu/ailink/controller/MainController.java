@@ -83,25 +83,32 @@ public class MainController implements CommandLineRunner {
                     }
                 }
             } else if ("1".equals(intentResult)) {
-                reply = chatDrawService.draw(userId, text);
-            } else if ("3".equals(intentResult)) {
-                String speechText = chatTextService.generateSpeechText(userId, text);
-                if (speechText != null && !speechText.startsWith("【")) {
-                    byte[] audioBytes = chatTTSService.synthesize(userId, speechText);
-                    if (audioBytes != null) {
-                        try {
-                            iintService.sendFile(botId, userId, audioBytes, "reply.mp3", null);
-                            chatTextService.recordAssistantReply(userId, speechText);
-                        } catch (Exception e) {
-                            log.error("发送语音失败", e);
-                            reply = speechText;
-                        }
-                    } else {
-                        reply = speechText;
-                    }
+                try {
+                    reply = chatDrawService.draw(userId, text);
+                } catch (Exception e) {
+                    log.error("画图失败，走文本兜底", e);
+                    reply = serviceFallback(botId, userId, "画图服务暂不可用：" + e.getMessage(), text, true);
                 }
+            } else if ("3".equals(intentResult)) {
+                reply = handleVoiceReply(botId, userId, text, false);
             } else {
                 reply = chatTextService.chat(userId, text);
+                // 意图协议：弱信号意图由 LLM 在 FC 首轮识别（[VOICE] / [VOICE_SWITCH:xx]）
+                if (reply != null && ChatTextService.isIntentMarker(reply)) {
+                    if (reply.startsWith("[VOICE]")) {
+                        // chat() 已把用户消息写入历史，兜底时避免重复
+                        reply = handleVoiceReply(botId, userId, text, true);
+                    } else if (reply.startsWith("[VOICE_SWITCH:")) {
+                        String voiceName = extractVoiceSwitchName(reply);
+                        String resolved = voiceName == null ? null : userVoiceState.findVoiceId(voiceName);
+                        if (resolved != null) {
+                            userVoiceState.setVoice(userId, resolved);
+                            reply = "已切换音色为" + resolved;
+                        } else {
+                            reply = voiceName == null ? "未识别到要切换的音色" : "未找到音色「" + voiceName + "」";
+                        }
+                    }
+                }
             }
 
         // ===== 图片消息 =====
@@ -128,5 +135,55 @@ public class MainController implements CommandLineRunner {
                 log.error("回复消息失败", e);
             }
         }
+    }
+
+    /**
+     * 语音回复流程：生成语音文本 → TTS 合成 → 发送。
+     * 失败时提示原因并回退文本回复。
+     *
+     * @param userMsgInHistory 用户消息是否已在对话历史中（硬路由=false，标记协议=true）
+     */
+    private String handleVoiceReply(String botId, String userId, String text, boolean userMsgInHistory) {
+        String speechText = chatTextService.generateSpeechText(userId, text);
+        if (speechText == null) {
+            return serviceFallback(botId, userId, "语音文本生成失败", text, userMsgInHistory);
+        }
+        try {
+            byte[] audioBytes = chatTTSService.synthesize(userId, speechText);
+            if (audioBytes == null) {
+                return serviceFallback(botId, userId, "语音合成失败", text, userMsgInHistory);
+            }
+            iintService.sendFile(botId, userId, audioBytes, "reply.mp3", null);
+            chatTextService.recordAssistantReply(userId, speechText);
+            return null;
+        } catch (Exception e) {
+            log.error("发送语音失败", e);
+            return serviceFallback(botId, userId, "语音发送失败：" + e.getMessage(), text, userMsgInHistory);
+        }
+    }
+
+    /**
+     * 硬路由服务失败兜底：先提示用户原因，再走文本回复（FC），避免回复出错。
+     *
+     * @param userMsgInHistory 失败服务是否已把用户消息写入历史（画图=true，语音=false）
+     */
+    private String serviceFallback(String botId, String userId, String reason,
+                                   String originalText, boolean userMsgInHistory) {
+        try {
+            iintService.sendText(botId, userId, "因为" + reason + "，暂时不能提供服务，请稍后再试或换一种说法");
+        } catch (Exception e) {
+            log.warn("兜底提示发送失败: {}", e.getMessage());
+        }
+        return userMsgInHistory
+                ? chatTextService.chatFallback(userId)
+                : chatTextService.chat(userId, originalText);
+    }
+
+    private static String extractVoiceSwitchName(String marker) {
+        int start = "[VOICE_SWITCH:".length();
+        int end = marker.indexOf(']', start);
+        if (end < 0) return null;
+        String name = marker.substring(start, end).trim();
+        return name.isEmpty() ? null : name;
     }
 }

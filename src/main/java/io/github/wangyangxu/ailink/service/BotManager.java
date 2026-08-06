@@ -58,8 +58,8 @@ public class BotManager {
     /** 消息回调 */
     private volatile BiConsumer<String, WeixinMessage> messageHandler;
 
-    /** 心跳连续失败阈值：连续 N 次失败触发降级恢复 */
-    private static final int HEARTBEAT_FAIL_THRESHOLD = 3;
+    /** 心跳连续失败阈值：连续 N 次失败触发降级恢复（心跳间隔 3s，10 次 ≈ 30s 失败窗口） */
+    private static final int HEARTBEAT_FAIL_THRESHOLD = 10;
 
     /** 心跳连续失败计数（botId → 次数），onHeartbeatSuccess 时清零 */
     private final ConcurrentHashMap<String, AtomicInteger> heartbeatFailCount = new ConcurrentHashMap<>();
