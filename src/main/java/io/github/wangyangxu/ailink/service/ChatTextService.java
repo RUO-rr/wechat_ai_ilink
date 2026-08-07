@@ -85,7 +85,9 @@ public class ChatTextService {
 
         // 6. 记忆异步处理（提取 / 滚动摘要），不阻塞回复
         String botId = BotContext.currentBotId();
-        memoryOrchestrator.afterReply(botId != null ? botId : "legacy", userId, messages);
+        BotContext ctx = BotContext.get();
+        memoryOrchestrator.afterReply(botId != null ? botId : "legacy", userId,
+                ctx != null ? ctx.getTraceId() : null, messages);
 
         log.info("文本对话完成 userId={}", userId);
         return assistantContent;

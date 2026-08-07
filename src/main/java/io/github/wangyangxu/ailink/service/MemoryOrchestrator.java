@@ -2,6 +2,7 @@ package io.github.wangyangxu.ailink.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -39,18 +40,28 @@ public class MemoryOrchestrator {
     @Autowired
     private MemoryExtractionService extractionService;
 
+    @Autowired
+    private MetricsService metricsService;
+
     /** 用户消息发送 + Bot 成功回复后调用 */
-    public void afterReply(String botId, String userId, List<Map<String, Object>> snapshot) {
+    public void afterReply(String botId, String userId, String traceId, List<Map<String, Object>> snapshot) {
         long turn = turnCounterService.increment(userId);
         List<Map<String, Object>> copy = snapshot == null ? List.of() : new ArrayList<>(snapshot);
         executor.submit(() -> {
+            MDC.put("traceId", traceId);
+            long start = System.nanoTime();
+            boolean ok = true;
             try {
                 if (summarizeEvery > 0 && turn > 0 && turn % summarizeEvery == 0) {
                     summarizer.summarize(userId, copy);
                 }
                 extractionService.extract(botId, userId, copy);
             } catch (Exception e) {
+                ok = false;
                 log.warn("记忆异步处理失败 userId={}: {}", userId, e.getMessage());
+            } finally {
+                metricsService.recordMemoryTask((System.nanoTime() - start) / 1_000_000, ok);
+                MDC.remove("traceId");
             }
         });
     }

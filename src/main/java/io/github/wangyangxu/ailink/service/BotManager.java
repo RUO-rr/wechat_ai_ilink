@@ -50,6 +50,7 @@ public class BotManager {
     private final BotConfiguration botConfig;
     private final BotRegistryMapper botRegistryMapper;
     private final BotAlertService alertService;
+    private final MetricsService metricsService;
     private final ConcurrentHashMap<String, BotInstance> bots = new ConcurrentHashMap<>();
 
     /** createBot 专用锁：保护 "检查上限 + 放入Map" 的原子性 */
@@ -65,10 +66,11 @@ public class BotManager {
     private final ConcurrentHashMap<String, AtomicInteger> heartbeatFailCount = new ConcurrentHashMap<>();
 
     public BotManager(BotConfiguration botConfig, BotRegistryMapper botRegistryMapper,
-                       BotAlertService alertService) {
+                       BotAlertService alertService, MetricsService metricsService) {
         this.botConfig = botConfig;
         this.botRegistryMapper = botRegistryMapper;
         this.alertService = alertService;
+        this.metricsService = metricsService;
     }
 
     // ==================== 启动恢复 ====================
@@ -353,6 +355,7 @@ public class BotManager {
         }
         bot.setState(BotLifecycleState.DISCONNECTED);
         alertService.alertSessionLost(botId, reason);
+        metricsService.recordSessionLost();
         log.warn("Bot {} 触发降级恢复 reason={}", botId, reason);
         try {
             loginBotAsync(botId, false);
@@ -467,7 +470,12 @@ public class BotManager {
                 return;
             }
             for (WeixinMessage msg : messages) {
-                handler.accept(bot.getBotId(), msg);
+                // 异步化：提交到 per-bot 消息执行器，轮询线程立即返回，
+                // 避免 LLM 处理耗时拖累下一轮消息轮询（心跳）
+                WeixinMessage m = msg;
+                if (!bot.submitMessage(() -> handler.accept(bot.getBotId(), m))) {
+                    metricsService.recordQueueDrop();
+                }
             }
         }
     }

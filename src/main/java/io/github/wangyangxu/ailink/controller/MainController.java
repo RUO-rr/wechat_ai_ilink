@@ -31,6 +31,7 @@ public class MainController implements CommandLineRunner {
     @Autowired private UserVoiceState userVoiceState;
     @Autowired private IintService iintService;
     @Autowired private BotManager botManager;
+    @Autowired private MetricsService metricsService;
 
     @Override
     public void run(String... args) {
@@ -49,11 +50,16 @@ public class MainController implements CommandLineRunner {
         BotContext.set(ctx);
         MDC.put("botId", botId);
         MDC.put("traceId", ctx.getTraceId());
+        metricsService.beginMessage();
         try {
             for (MessageItem item : items) {
                 processItem(botId, fromUserId, item);
             }
         } finally {
+            MetricsService.MessageStats stats = metricsService.endMessage();
+            log.info("链路计时 traceId={} botId={} userId={} totalMs={} fcRounds={} llmCalls={} llmTotalMs={}",
+                    ctx.getTraceId(), botId, fromUserId,
+                    stats.totalMs(), stats.fcRounds(), stats.llmCalls(), stats.llmTotalMs());
             BotContext.clear();
             MDC.remove("botId");
             MDC.remove("traceId");
@@ -65,6 +71,7 @@ public class MainController implements CommandLineRunner {
 
         // ===== 文本消息 =====
         if (item.getText_item() != null) {
+            metricsService.recordMessageType("text");
             String text = item.getText_item().getText().trim();
             log.debug("收到文本消息 len={}", text.length());
 
@@ -113,16 +120,19 @@ public class MainController implements CommandLineRunner {
 
         // ===== 图片消息 =====
         } else if (item.getImage_item() != null) {
+            metricsService.recordMessageType("image");
             log.info("收到图片消息");
             reply = chatImageService.chat(userId, item.getImage_item());
 
         // ===== 语音消息 =====
         } else if (item.getVoice_item() != null) {
+            metricsService.recordMessageType("voice");
             log.info("收到语音消息");
             reply = chatVoiceService.chat(userId, item.getVoice_item());
 
         // ===== 文件消息 =====
         } else if (item.getFile_item() != null) {
+            metricsService.recordMessageType("file");
             log.info("收到文件消息: {}", item.getFile_item().getFile_name());
             reply = chatFileService.chat(userId, item.getFile_item());
         }

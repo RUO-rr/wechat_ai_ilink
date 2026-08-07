@@ -28,6 +28,7 @@ public class FunctionCallingOrchestrator {
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final ToolRouter toolRouter;
+    private final MetricsService metricsService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${llm.base-url}")
@@ -46,10 +47,11 @@ public class FunctionCallingOrchestrator {
     private String apiKey;
 
     public FunctionCallingOrchestrator(LlmClient llmClient, ToolRegistry toolRegistry,
-                                        ToolRouter toolRouter) {
+                                        ToolRouter toolRouter, MetricsService metricsService) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.toolRouter = toolRouter;
+        this.metricsService = metricsService;
     }
 
     /** FC 循环执行结果 */
@@ -106,7 +108,11 @@ public class FunctionCallingOrchestrator {
 
             JsonNode root;
             try {
+                long llmStart = System.nanoTime();
                 root = llmClient.callChatApi(baseUrl, apiKey, requestBody);
+                long llmMs = (System.nanoTime() - llmStart) / 1_000_000;
+                metricsService.recordLlmCall(llmMs);
+                metricsService.recordFcRound();
             } catch (Exception e) {
                 log.error("调用大模型 API 失败, step={}", step, e);
                 // 返回部分结果，让调用方决定处置
