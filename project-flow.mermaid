@@ -1,112 +1,118 @@
 %%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#e8f4fd', 'primaryTextColor': '#000000', 'primaryBorderColor': '#333333', 'lineColor': '#333333', 'secondaryColor': '#f0f0f0', 'tertiaryColor': '#ffffff'}}}%%
 graph TB
-    subgraph 应用启动
-        A[Spring Boot 启动] --> B[BotManager @PostConstruct]
-        B --> C{DB bot_registry 有记录?}
-        C -->|是| D[遍历恢复 BotInstance]
-        D --> E[注入历史 wechatIdentity]
-        E --> F[对每个 Bot 调用 loginBotAsync]
-        C -->|否| G[跳过恢复]
-        A --> H[MainController CommandLineRunner]
-        H --> I[注册 messageHandler 到 BotManager]
+
+    subgraph 应用启动与恢复
+        A["Spring Boot 启动"] --> B["BotManager @PostConstruct"]
+        B --> C{"DB bot_registry 有记录?"}
+        C -->|"否"| C1["跳过恢复"]
+        C -->|"是"| D["遍历恢复 BotInstance / 注入历史 wechatIdentity"]
+        D --> E["loginBotAsync(botId, force=false) 统一登录入口"]
+        A --> F["MainController CommandLineRunner"]
+        F --> G["注册 messageHandler 到 BotManager"]
     end
 
-    subgraph 创建Bot与线程
-        J[POST /bot/create] --> K[BotManager.createBot]
-        K --> L{bots.size >= maxBots?}
-        L -->|是| M[抛出 IllegalStateException]
-        L -->|否| N[generateBotId: bot_ + 8位随机]
-        N --> O[new BotInstance]
-        O --> P[创建 FixedThreadPool core=2<br/>线程名: bot-botId<br/>daemon=true]
-        P --> Q[bots.put botId→instance]
-        Q --> R[loginBotAsync]
+    subgraph Bot创建与登录统一入口
+        J["POST /bot/create?label=可选（无 userId）"] --> K["BotManager.createBot"]
+        K --> L{"bots.size >= maxBots?"}
+        L -->|"是"| M["抛出 IllegalStateException"]
+        L -->|"否"| N["new BotInstance / 登录executor + 消息executor"]
+        N --> O1["loginBotAsync(botId, force)"]
+        O1 --> O2{"tryBeginLogin CAS 成功?"}
+        O2 -->|"失败(已在登录中)"| O3["抛异常 → 前端提示 正在重新登录"]
+        O2 -->|"成功"| O4["ReentrantLock 锁内: close旧client + build新client"]
+        O4 --> O5["注册 4 监听器: login / message / disconnect / heartbeat"]
+        O5 --> O6["监听器绑定自身 client 实例: boundClient == bot.getClient 过滤"]
     end
 
-    subgraph 异步登录流程-线程池执行
-        R --> S[bot.executor.submit doLogin]
-        S --> T[设置 state=UNINITIALIZED]
-        T --> U[构建 ILinkClientBuilder]
-        U --> V[注册 BotLoginListener]
-        U --> W[注册 BotMessageListener]
-        V --> X{hasWechatIdentity?}
-        X -->|是| Y[构建 LoginContext 尝试免扫码恢复]
-        Y --> Z[builder.loginContext savedCtx]
-        Z --> AA[client = builder.build]
-        X -->|否| AA
-        AA --> AB{client.isLoggedIn?}
-        AB -->|是| AC[state=ONLINE 免扫码成功]
-        AB -->|否| AD[state=QR_READY]
-        AD --> AE[client.executeLogin 生成二维码]
-        AE --> AF[bot.setQrCode + qrGeneratedAt]
-        AF --> AG[client.getLoginFuture.get<br/>阻塞等待 loginTimeout=180s]
+    subgraph 登录流程-免扫码恢复与扫码
+        O6 --> P{"forceNewQr 或 无历史身份?"}
+        P -->|"否"| Q["注入 LoginContext 尝试免扫码恢复"]
+        Q --> R{"client.isLoggedIn?"}
+        R -->|"是"| S["state=ONLINE 免扫码成功"]
+        P -->|"是"| T["state=QR_READY"]
+        T --> U["executeLogin 生成二维码"]
+        U --> V["getLoginFuture.get 阻塞等待扫码"]
+        R -->|"否"| T
+        V -->|"onLoginSuccess"| W["身份比对(变更告警) → bot_registry.upsert → ONLINE"]
+        V -->|"超时"| X["QR_EXPIRED → tryReconnect(3) 同步"]
+        X --> X1{"3 次内重扫成功?"}
+        X1 -->|"是"| S
+        X1 -->|"否"| X2["state=ERROR + alertReconnectFailed"]
     end
 
-    subgraph 扫码回调-BotLoginListener
-        AG -->|用户扫码成功| AH[onLoginSuccess 回调]
-        AH --> AI[从 LoginContext 提取<br/>wechatUserId + wechatBotId]
-        AI --> AJ{身份与历史不匹配?}
-        AJ -->|是| AK[告警 alertIdentityChanged]
-        AJ -->|否| AL[setWechatIdentity]
-        AK --> AL
-        AL --> AM[botRegistryMapper.upsert 持久化]
-        AM --> AN[LoginFuture complete]
-        AN --> AO[state=ONLINE]
-        AO --> AP[auditLogin 记录]
+    subgraph SDK消息轮询-3秒（投递入口）
+        P1["心跳调度器 scheduleWithFixedDelay 3s"] --> P2["pollAndDispatchMessages（心跳=消息轮询）"]
+        P2 --> P3{"已登录 且 有新消息?"}
+        P3 -->|"否"| P1
+        P3 -->|"是"| P4["onMessages 同步分发（轮询线程）"]
+        P4 --> P5["bot.submitMessage 入队 → msg-botId 单线程 队列上限100"]
+        P5 --> P6{"队列已满?"}
+        P6 -->|"是"| P61["丢弃 + WARN + queueDrops 指标"]
+        P6 -->|"否"| P7["消息处理线程执行 handler（轮询线程立即返回）"]
+        P61 --> P1
     end
 
-    subgraph 超时与重连
-        AG -->|超时 TimeoutException| AQ[state=QR_EXPIRED]
-        AQ --> AR[tryReconnect bot,3]
-        AR --> AS[executor.submit 重连任务]
-        AS --> AT[循环 i=1..3]
-        AT --> AU[Thread.sleep 5000ms]
-        AU --> AV[state=UNINITIALIZED]
-        AV --> AW[client.executeLogin 重新生成QR]
-        AW --> AX[state=QR_READY]
-        AX --> AY[getLoginFuture.get 等待扫码]
-        AY -->|成功| AZ[state=ONLINE return]
-        AY -->|失败| BA{还有重试次数?}
-        BA -->|是| AT
-        BA -->|否| BB[state=ERROR]
-        BB --> BC[alertReconnectFailed]
+    subgraph 消息处理-异步线程（链路计时）
+        P7 --> P8["MainController.handleMessage: BotContext + MDC traceId + Metrics.beginMessage"]
+        P8 --> P9["processItem 路由 + recordMessageType"]
+        P9 --> P10{"消息类型"}
+        P10 -->|"文本"| P11["chatTextService 意图处理"]
+        P10 -->|"图片"| P12["chatImageService"]
+        P10 -->|"语音"| P13["chatVoiceService"]
+        P10 -->|"文件"| P14["chatFileService"]
+        P11 --> P15{"强信号硬路由命中?"}
+        P15 -->|"画图/语音回复/切换音色"| P16["对应服务（含失败兜底: 提示原因后文本回复）"]
+        P15 -->|"否"| P17["FC: 记忆槽注入 + FunctionCallingOrchestrator（LLM 调用计时 + FC 轮次）"]
+        P17 --> P20["iintService 发送回复"]
+        P16 --> P20
+        P12 --> P20
+        P13 --> P20
+        P14 --> P20
+        P20 --> P21["Metrics.endMessage 链路计时日志: traceId/totalMs/fcRounds/llmCalls"]
     end
 
-    subgraph 消息处理流程
-        AO --> BD[SDK 推送消息]
-        BD --> BE[BotMessageListener.onMessages]
-        BE --> BF[遍历 messages]
-        BF --> BG[messageHandler.accept botId,msg]
-        BG --> BH[MainController.handleMessage]
-        BH --> BI[设置 BotContext ThreadLocal]
-        BI --> BJ[processItem 路由处理]
-        BJ --> BK{消息类型}
-        BK -->|文本| BL[意图检测→聊天/画图/语音]
-        BK -->|图片| BM[chatImageService]
-        BK -->|语音| BN[chatVoiceService]
-        BK -->|文件| BO[chatFileService]
-        BL --> BP[iintService.sendText 回复]
-        BM --> BP
-        BN --> BP
-        BO --> BP
+    subgraph 记忆异步管线-回复后触发（memory-worker）
+        P21 --> M1["MemoryOrchestrator.afterReply: Redis turn计数 + traceId 透传"]
+        M1 --> M2["memory-worker 单线程（MDC traceId 重设）"]
+        M2 --> M3{"turn % 10 == 0?"}
+        M3 -->|"是"| M4["滚动摘要：旧 summary supersede → agent_memory"]
+        M3 -->|"否"| M5["记忆提取（sample-rate 采样）"]
+        M4 --> M7["逐条校验丢坏留好 + dimension 归一化 + supersede 冲突链"]
+        M5 --> M7
+    end
+
+    subgraph 断线与心跳降级（SDK 底层回调驱动）
+        D1["onDisconnect"] --> D2["state=DISCONNECTED"]
+        D3["onReconnectFailed"] --> D4["triggerDegradation"]
+        D5["心跳连续失败 >=10 次"] --> D4
+        D4 --> D6["alertSessionLost + sessionLost 指标"]
+        D6 --> D7["loginBotAsync(force=false) 免扫码恢复"]
+        D7 --> D8{"恢复成功?"}
+        D8 -->|"否"| D9["自动进入二维码流程 QR_READY"]
+        D8 -->|"是"| S
     end
 
     subgraph 生命周期状态机
         direction LR
-        S1[UNINITIALIZED] -->|executeLogin| S2[QR_READY]
-        S2 -->|扫码成功| S3[ONLINE]
-        S2 -->|超时| S4[QR_EXPIRED]
-        S4 -->|重连成功| S3
-        S4 -->|重连失败| S5[ERROR]
-        S3 -->|断线| S6[DISCONNECTED]
-        S6 -->|重连| S3
-        S3 -->|手动销毁| S7[OFFLINE]
-        S2 -->|登录异常| S5
+        S1["UNINITIALIZED"] -->|"executeLogin"| S2["QR_READY"]
+        S2 -->|"扫码成功"| S3["ONLINE"]
+        S2 -->|"超时"| S4["QR_EXPIRED"]
+        S4 -->|"重连成功"| S3
+        S4 -->|"重连失败"| S5["ERROR"]
+        S3 -->|"onDisconnect"| S6["DISCONNECTED"]
+        S6 -->|"降级恢复成功"| S3
+        S3 -->|"手动销毁"| S7["OFFLINE"]
+        S2 -->|"登录异常"| S5
+    end
+
+    subgraph 管理面与可观测（X-API-Token）
+        API1["GET /api/health"] --> API2["Bot 概览 + JVM uptime"]
+        API3["GET /api/metrics"] --> API4["MetricsService 快照: 延迟分位/FC/LLM/队列丢弃/会话丢失"]
     end
 
     subgraph 优雅关闭
-        C1[@PreDestroy shutdownAll] --> C2[CompletableFuture.runAsync<br/>每个bot.shutdown]
-        C2 --> C3[executor.shutdownNow]
-        C3 --> C4[client.close]
-        C4 --> C5[allOf.get 5s超时]
-        C5 --> C6[bots.clear]
+        C1["@PreDestroy shutdownAll"] --> C2["并行 bot.shutdown"]
+        C2 --> C3["登录 executor + 消息 executor shutdownNow"]
+        C3 --> C4["client.close"]
+        C4 --> C5["5s 超时 + bots.clear"]
     end
