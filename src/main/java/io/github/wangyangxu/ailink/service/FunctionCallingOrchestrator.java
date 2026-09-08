@@ -124,7 +124,7 @@ public class FunctionCallingOrchestrator {
             JsonNode toolCallsNode = LlmClient.extractToolCalls(msgNode);
 
             if (toolCallsNode == null || !toolCallsNode.isArray() || toolCallsNode.size() == 0) {
-                assistantContent = msgNode.get("content").asText();
+                assistantContent = extractFinalContent(msgNode);
                 break;
             }
 
@@ -190,6 +190,29 @@ public class FunctionCallingOrchestrator {
         assistantContent = applyWatcher(userMessage, assistantContent, calledTools, route.matchedDomain());
 
         return new Result(assistantContent, generatedFiles, explicitlySentFiles);
+    }
+
+    /**
+     * 提取最终回复文本。
+     * DeepSeek 思考模式下 content 可能为空、正文在 reasoning_content —— 必须回退，
+     * 否则会向用户发送空消息；content 缺失时兜底文案，避免 NPE 打断回复。
+     */
+    private static String extractFinalContent(JsonNode msgNode) {
+        JsonNode content = msgNode.get("content");
+        if (content != null && !content.isNull()) {
+            String text = content.asText();
+            if (text != null && !text.isBlank()) {
+                return text;
+            }
+        }
+        JsonNode reasoning = msgNode.get("reasoning_content");
+        if (reasoning != null && !reasoning.isNull()) {
+            String text = reasoning.asText();
+            if (text != null && !text.isBlank()) {
+                return text;
+            }
+        }
+        return "抱歉，我暂时无法生成回复，请换一种说法再试。";
     }
 
     /**

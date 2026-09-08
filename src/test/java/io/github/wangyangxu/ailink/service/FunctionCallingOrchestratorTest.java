@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
@@ -159,5 +160,33 @@ class FunctionCallingOrchestratorTest {
                 orchestrator.execute(baseMessages(), "bot1", "u1");
 
         assertEquals("【网络错误】调用大模型失败：timeout", result.assistantContent());
+    }
+
+    @Test
+    void finalRoundReasoningOnlyContent_doesNotReturnEmptyMessage() throws Exception {
+        // DeepSeek 思考模式：content 为空、正文在 reasoning_content —— 最终回复不能是空消息
+        JsonNode resp = OBJECT_MAPPER.readTree(
+                "{\"choices\":[{\"message\":{\"content\":\"\","
+                        + "\"reasoning_content\":\"文件已成功修改，标题已更新\",\"tool_calls\":null}}]}");
+        when(llmClient.callChatApi(any(), any(), any())).thenReturn(resp);
+        when(toolRouter.route(anyString())).thenReturn(plainRoute());
+
+        FunctionCallingOrchestrator.Result result =
+                orchestrator.execute(baseMessages(), "bot1", "u1");
+
+        assertFalse(result.assistantContent() == null || result.assistantContent().isBlank());
+    }
+
+    @Test
+    void finalRoundNullContent_doesNotThrowOrReturnEmpty() throws Exception {
+        JsonNode resp = OBJECT_MAPPER.readTree(
+                "{\"choices\":[{\"message\":{\"reasoning_content\":\"思考中\",\"tool_calls\":null}}]}");
+        when(llmClient.callChatApi(any(), any(), any())).thenReturn(resp);
+        when(toolRouter.route(anyString())).thenReturn(plainRoute());
+
+        FunctionCallingOrchestrator.Result result =
+                orchestrator.execute(baseMessages(), "bot1", "u1");
+
+        assertFalse(result.assistantContent() == null || result.assistantContent().isBlank());
     }
 }
