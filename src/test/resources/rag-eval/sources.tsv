@@ -1,0 +1,34 @@
+file	title	source_url	fetched	lang	topic
+spring-boot/spring-boot-aop-concepts.md	Spring Framework 参考文档：面向切面编程（AOP）核心概念	https://docs.spring.io/spring-framework/reference/core/aop.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-aop-pointcuts.md	Spring Framework 参考文档：声明切点（@Pointcut 与切点指示符）	https://docs.spring.io/spring-framework/reference/core/aop/ataspectj/pointcuts.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-aop-advice.md	Spring Framework 参考文档：声明通知（@Before / @After / @Around）	https://docs.spring.io/spring-framework/reference/core/aop/ataspectj/advice.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-aop-proxying.md	Spring Framework 参考文档：AOP 代理机制（JDK 动态代理与 CGLIB）	https://docs.spring.io/spring-framework/reference/core/aop/proxying.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-tx-declarative.md	Spring Framework 参考文档：声明式事务管理	https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-tx-propagation.md	Spring Framework 参考文档：事务传播（Transaction Propagation）	https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html	2026-09-14	en	spring-boot
+spring-boot/spring-boot-tx-rollback.md	Spring Framework 参考文档：事务回滚规则	https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html	2026-09-14	en	spring-boot
+langchain4j/langchain4j-rag-core-concepts.md	LangChain4j 文档：RAG 是什么 —— 索引与检索两个阶段、Easy RAG、核心 API	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-rag-document-pipeline.md	LangChain4j 文档：RAG 文档管线（Document / Parser / Transformer / Splitter / TextSegment）	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-rag-splitters-and-segments.md	LangChain4j 文档：TextSegment、DocumentSplitter 与 TextSegmentTransformer	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-rag-embedding-and-store.md	LangChain4j 文档：EmbeddingStore 与 EmbeddingStoreIngestor（灌库与检索）	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-rag-naive-and-advanced.md	LangChain4j 文档：Naive RAG 与 Advanced RAG（RetrievalAugmentor、Query、QueryTransformer）	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-rag-content-retriever.md	LangChain4j 文档：ContentRetriever、QueryRouter 与 ContentAggregator	https://docs.langchain4j.dev/tutorials/rag	2026-09-14	en	langchain4j
+langchain4j/langchain4j-embedding-stores.md	LangChain4j 文档：Embedding Stores（向量存储集成索引与异步检索约定）	https://docs.langchain4j.dev/integrations/embedding-stores/	2026-09-14	en	langchain4j
+langchain4j/langchain4j-testing-and-evaluation.md	LangChain4j 文档：测试与评测（测试用模型、内存向量库）	https://docs.langchain4j.dev/tutorials/testing-and-evaluation	2026-09-14	en	langchain4j
+enemy-state-clause/un-charter-chapter-8.md	《联合国宪章》第八章 区域办法（第 52 至 54 条）	https://www.un.org/zh/about-us/un-charter/chapter-8	2026-09-14	zh	enemy-state-clause
+enemy-state-clause/un-charter-chapter-12.md	《联合国宪章》第十二章 国际托管制度（第 75 至 85 条）	https://www.un.org/zh/about-us/un-charter/chapter-12	2026-09-14	zh	enemy-state-clause
+enemy-state-clause/un-charter-chapter-17.md	《联合国宪章》第十七章 过渡安全办法（第 106 至 107 条）	https://www.un.org/zh/about-us/un-charter/chapter-17	2026-09-14	zh	enemy-state-clause
+enemy-state-clause/gmw-enemy-clause-explained.md	光明网《蓝厅见》：日本投降 81 周年，中方为何再提“敌国条款”？	https://www.gmw.cn/	2026-09-14	zh	enemy-state-clause
+enemy-state-clause/mfa-enemy-clause-still-valid.md	观察者网报道：外交部称“敌国条款”作为针对战败国的特殊制度安排至今仍然有效	https://www.guancha.cn/internation/2026_09_08_830438.shtml	2026-09-14	zh	enemy-state-clause
+enemy-state-clause/sina-why-emphasize-enemy-clause.md	新浪新闻：为什么要强调“敌国条款”依然有效	https://news.sina.com.cn/c/2026-09-12/doc-inirpkcn5385421.shtml	2026-09-14	zh	enemy-state-clause
+wildlife/xinhua-brown-panda-qizai.md	新华网：全球唯一圈养棕色大熊猫“七仔”与秦岭大熊猫保护	https://www.news.cn/politics/20251124/ed5ff9de07fb4e279edbdf28804808d3/c.html	2026-09-14	zh	wildlife
+wildlife/forestry-giant-panda-reserve.md	国家林业和草原局：大熊猫保护与野化放归工作进展	https://www.forestry.gov.cn/lyj/1/dzwzbh/20251121/650741.html	2026-09-14	zh	wildlife
+wildlife/chinanews-panda-downgraded-to-vulnerable.md	中新网：大熊猫受威胁程度等级由“濒危”降为“易危”	https://www.chinanews.com/sh/2021/07-10/9516893.shtml	2026-09-14	zh	wildlife
+wildlife/chinanews-forestry-early-to-downgrade.md	中新网：大熊猫濒危等级降为“易危”，国家林业局称降级为时过早	https://www.chinanews.com/gn/2016/09-06/7995585.shtml	2026-09-14	zh	wildlife
+gta6-leak/gamersky-90-clips-leaked.md	游民星空：《GTA6》泄露视频片段多达 90 个	https://www.gamersky.com/news/202209/1519560.shtml	2026-09-14	zh	gta6-leak
+gta6-leak/gamersky-90-clips-review.md	游民星空：玩家回顾《GTA6》90 段泄露视频中的细节	https://www.gamersky.com/news/202505/1924758.shtml	2026-09-14	zh	gta6-leak
+gta6-leak/gamersky-breach-trial-details.md	游民星空：《GTA6》泄露案庭审细节 —— 黑客威胁公开源码	https://www.gamersky.com/news/202308/1636179.shtml	2026-09-14	zh	gta6-leak
+gta6-leak/gamersky-hacker-found-guilty.md	游民星空：《GTA6》泄密黑客被裁定有罪，曾威胁 R 星全体员工	https://www.gamersky.com/news/202308/1636175.shtml	2026-09-14	zh	gta6-leak
+gta6-leak/gamersky-rockstar-anti-leak.md	游民星空：R 星确认打击《GTA6》黑客泄露与无人机偷拍	https://www.gamersky.com/news/202609/2208450.shtml	2026-09-14	zh	gta6-leak
+gta6-leak/ali213-hacker-arrested.md	游侠网：泄露《GTA6》的黑客已被伦敦警方逮捕	https://www.ali213.net/news/html/2022-9/708533.html	2026-09-14	zh	gta6-leak
+gta6-leak/163-hacker-hospital-order.md	网易：泄露《GTA6》的 17 岁黑客被判终身入院看护	https://www.163.com/dy/article/IMJHVT8005119FS5.html	2026-09-14	zh	gta6-leak
+gta6-leak/3dm-breach-2nd-anniversary.md	3DM：《GTA6》黑客泄露事件两周年，消息人士分享幕后细节	https://www.3dmgame.com/news/202409/3904609.html	2026-09-14	zh	gta6-leak
