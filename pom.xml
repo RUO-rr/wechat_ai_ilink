@@ -111,6 +111,19 @@
             <artifactId>langchain4j-community-dashscope</artifactId>
             <version>1.20.0-beta30</version>
         </dependency>
+        <!-- 向量库：Qdrant（可选 provider，默认 in-memory；见 application.properties 的 vectorstore.*） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-qdrant</artifactId>
+            <version>1.20.0-beta30</version>
+        </dependency>
+        <!-- 显式抬到 1.19.0：langchain4j-qdrant 默认带 1.17.0 的客户端，与 1.19.x 服务端跨了
+             两个 minor，客户端会以「版本不兼容」告警；同 minor 配对后该告警消失（集成测试验证） -->
+        <dependency>
+            <groupId>io.qdrant</groupId>
+            <artifactId>client</artifactId>
+            <version>1.19.0</version>
+        </dependency>
     </dependencies>
 
     <build>

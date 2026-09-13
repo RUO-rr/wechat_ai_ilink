@@ -4,7 +4,6 @@ import io.github.wangyangxu.ailink.model.KnowledgeChunk;
 import io.github.wangyangxu.ailink.model.KnowledgeDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -17,11 +16,13 @@ import java.util.Map;
  * <b>为什么放内存</b>：当前语料是「内置资产 + 用户上传文档」，量级在千片段以内，
  * 全量载入内存后单次检索是毫秒级，比每次查库再算相似度便宜得多，也省掉一个向量数据库组件。
  * 索引以不可变快照发布（写入时整体重建后替换引用），读路径无锁、无半成品状态；
- * 语料规模长到内存吃不下时，替换本类实现（HNSW / pgvector / Milvus）即可，检索侧接口不变。
- * <p>
  * 本类只负责「知识库条目长什么样、怎么增删」；打分与融合在内核里，与长期记忆共用。
+ * <p>
+ * <b>规模涨上去之后怎么办</b>：换的是 {@link RetrievalIndex} 的实现（向量搬去 Qdrant HNSW），
+ * 而不是改本类 —— 本类只保留「关键词通道 + 条目元信息」，并在
+ * {@code retainVectors=false} 时不再于堆内保留向量。文本仍要在内存里（BM25 依赖全文分词与倒排表），
+ * 能省的是向量：10 万片段 × 1024 维 ≈ 400MB，那才是内存的大头。
  */
-@Component
 public class KnowledgeVectorIndex {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeVectorIndex.class);
@@ -55,6 +56,18 @@ public class KnowledgeVectorIndex {
     public record Stats(int documents, int chunks, int vectorizedChunks, int dimensions) {}
 
     private final HybridIndex<Entry> core = new HybridIndex<>();
+
+    /** 是否在堆内保留向量：远端向量库模式下置 false，省掉几百 MB 的浮点数组。 */
+    private final boolean retainVectors;
+
+    /** 默认实现：向量与关键词都在堆内（千级片段的最优解）。 */
+    public KnowledgeVectorIndex() {
+        this(true);
+    }
+
+    public KnowledgeVectorIndex(boolean retainVectors) {
+        this.retainVectors = retainVectors;
+    }
 
     // ==================== 写入（copy-on-write，读路径无锁） ====================
 
@@ -101,7 +114,7 @@ public class KnowledgeVectorIndex {
                 chunk.getContent(),
                 doc == null ? "unknown" : doc.getSourcePath(),
                 doc == null ? "unknown" : doc.getTitle(),
-                EmbeddingCodec.decode(chunk.getEmbedding()),
+                retainVectors ? EmbeddingCodec.decode(chunk.getEmbedding()) : null,
                 chunk.getEmbeddingModel());
         return new HybridIndex.Doc<>(entry.identityKey(), entry.content(),
                 entry.vector(), entry.embeddingModel(), entry);

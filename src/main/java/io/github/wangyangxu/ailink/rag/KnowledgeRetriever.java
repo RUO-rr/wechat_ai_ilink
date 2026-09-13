@@ -48,20 +48,20 @@ public class KnowledgeRetriever {
     private static final double RERANK_WEIGHT = 0.8d;
 
     private final RagProperties props;
-    private final KnowledgeVectorIndex index;
+    private final RetrievalIndex retrievalIndex;
     private final KnowledgeIndexService indexService;
     private final EmbeddingModel embeddingModel;
     private final Reranker reranker;
     private final MetricsService metrics;
 
     public KnowledgeRetriever(RagProperties props,
-                              KnowledgeVectorIndex index,
+                              RetrievalIndex retrievalIndex,
                               KnowledgeIndexService indexService,
                               EmbeddingModel ragEmbeddingModel,
                               Reranker ragReranker,
                               MetricsService metricsService) {
         this.props = props;
-        this.index = index;
+        this.retrievalIndex = retrievalIndex;
         this.indexService = indexService;
         this.embeddingModel = ragEmbeddingModel;
         this.reranker = ragReranker;
@@ -81,8 +81,8 @@ public class KnowledgeRetriever {
         float[] queryVector = embedQuery(query);
         List<KnowledgeVectorIndex.Scored> vectorHits = queryVector == null
                 ? List.of()
-                : index.searchVector(queryVector, indexService.embeddingModelId(), candidates);
-        List<KnowledgeVectorIndex.Scored> keywordHits = index.searchKeyword(query, candidates);
+                : retrievalIndex.searchVector(queryVector, indexService.embeddingModelId(), candidates);
+        List<KnowledgeVectorIndex.Scored> keywordHits = retrievalIndex.searchKeyword(query, candidates);
 
         List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> fused =
                 HybridFusion.fuse(vectorHits, keywordHits, props.getVectorWeight());
@@ -102,7 +102,7 @@ public class KnowledgeRetriever {
     }
 
     public boolean isAvailable() {
-        return props.isEnabled() && !index.isEmpty();
+        return props.isEnabled() && !retrievalIndex.isEmpty();
     }
 
     // ==================== 召回与融合 ====================

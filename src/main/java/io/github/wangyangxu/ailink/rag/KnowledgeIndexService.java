@@ -73,7 +73,7 @@ public class KnowledgeIndexService {
 
     private final RagProperties props;
     private final TextChunker chunker;
-    private final KnowledgeVectorIndex index;
+    private final RetrievalIndex retrievalIndex;
     private final EmbeddingModel embeddingModel;
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeChunkMapper chunkMapper;
@@ -84,13 +84,13 @@ public class KnowledgeIndexService {
     @Autowired
     public KnowledgeIndexService(RagProperties props,
                                  TextChunker chunker,
-                                 KnowledgeVectorIndex index,
+                                 RetrievalIndex retrievalIndex,
                                  EmbeddingModel ragEmbeddingModel,
                                  KnowledgeDocumentMapper documentMapper,
                                  KnowledgeChunkMapper chunkMapper) {
         this.props = props;
         this.chunker = chunker;
-        this.index = index;
+        this.retrievalIndex = retrievalIndex;
         this.embeddingModel = ragEmbeddingModel;
         this.documentMapper = documentMapper;
         this.chunkMapper = chunkMapper;
@@ -132,9 +132,8 @@ public class KnowledgeIndexService {
             rebuildFromDatabase();
             int resources = indexResourceAssets();
             int uploads = indexUploadedDocuments();
-            KnowledgeVectorIndex.Stats stats = index.stats();
             log.info("灌库完成: 内置资产 {} 份, 上传文档 {} 份, 片段 {}（向量化 {}）, 耗时 {}ms",
-                    resources, uploads, stats.chunks(), stats.vectorizedChunks(),
+                    resources, uploads, retrievalIndex.chunkCount(), retrievalIndex.vectorCount(),
                     System.currentTimeMillis() - start);
         } finally {
             indexing.set(false);
@@ -149,7 +148,7 @@ public class KnowledgeIndexService {
             byId.put(doc.getId(), doc);
         }
         List<KnowledgeChunk> chunks = chunkMapper.findAll();
-        index.rebuild(chunks, byId);
+        retrievalIndex.rebuild(chunks, byId);
     }
 
     // ==================== 来源扫描 ====================
@@ -303,7 +302,12 @@ public class KnowledgeIndexService {
                 chunkMapper.insertBatch(chunks.subList(i, Math.min(chunks.size(), i + EMBED_BATCH_SIZE)));
             }
         }
-        index.upsert(document, chunks);
+        if (existing == null) {
+            retrievalIndex.index(document, chunks);
+        } else {
+            // 覆盖已有文档：让向量通道先按 document_id 清掉旧点，避免片段变少时留下幽灵点
+            retrievalIndex.replace(document, chunks);
+        }
         log.info("知识入库: {} → {} 片段（向量化 {}），来源={}", sourcePath, chunks.size(), vectorized, sourceType);
         return new IndexOutcome(documentId, sourcePath, title, chunks.size(), vectorized, true);
     }
@@ -311,7 +315,7 @@ public class KnowledgeIndexService {
     /** 删除一份文档（含索引与库内片段）。 */
     public synchronized void removeDocument(long documentId) {
         chunkMapper.deleteByDocumentId(documentId);
-        index.removeDocument(documentId);
+        retrievalIndex.removeDocument(documentId);
     }
 
     /**
@@ -319,7 +323,7 @@ public class KnowledgeIndexService {
      * 让摘要看到「开头 + 中段 + 结尾」，而不是只看到前 2000 字。
      */
     public String coverageSample(long documentId, int maxChars) {
-        List<KnowledgeVectorIndex.Entry> entries = index.entriesOfDocument(documentId);
+        List<KnowledgeVectorIndex.Entry> entries = retrievalIndex.entriesOfDocument(documentId);
         if (entries.isEmpty()) {
             return "";
         }
@@ -350,9 +354,8 @@ public class KnowledgeIndexService {
     }
 
     public IndexStats stats() {
-        KnowledgeVectorIndex.Stats indexStats = index.stats();
-        return new IndexStats(documentMapper.countAll(), indexStats.chunks(),
-                indexStats.vectorizedChunks(), indexStats.dimensions(), embeddingModelId());
+        return new IndexStats(documentMapper.countAll(), retrievalIndex.chunkCount(),
+                retrievalIndex.vectorCount(), retrievalIndex.dimensions(), embeddingModelId());
     }
 
     /** 当前向量模型标识：写入片段并与库中记录比对，实现「换模型即重建」。 */
