@@ -26,6 +26,16 @@
         LIMIT #{limit}
     </select>
 
+    <select id="findIndexableByUser" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
+        SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
+        FROM agent_memory
+        WHERE user_id = #{userId}
+          AND memory_type IN ('fact', 'preference', 'note')
+          AND status = 'active'
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="findLatestActiveSummary" resultType="io.github.wangyangxu.ailink.model.AgentMemory">
         SELECT id, user_id, memory_type, dimension, content, source_message_id, status, supersedes_id, created_at, updated_at
         FROM agent_memory

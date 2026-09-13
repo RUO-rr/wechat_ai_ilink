@@ -21,6 +21,12 @@ public interface AgentMemoryMapper {
     /** 该用户最新 active 的 fact / preference（按时间倒序，limit 截断） */
     List<AgentMemory> findActiveFacts(@Param("userId") String userId, @Param("limit") int limit);
 
+    /**
+     * 记忆索引装载：该用户可参与检索的 active 记忆（fact / preference / note）。
+     * 摘要不进索引 —— 它本身是「最近若干轮的压缩」，走固定槽位，不需要按相关性召回。
+     */
+    List<AgentMemory> findIndexableByUser(@Param("userId") String userId, @Param("limit") int limit);
+
     /** 最新 active 的摘要（滚动摘要只保留一条） */
     AgentMemory findLatestActiveSummary(@Param("userId") String userId);
 

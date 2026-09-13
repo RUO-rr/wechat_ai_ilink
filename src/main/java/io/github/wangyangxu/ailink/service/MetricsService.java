@@ -50,6 +50,9 @@ public class MetricsService {
     private final AtomicLong ragRetrievals = new AtomicLong();
     private final AtomicLong ragTotalMs = new AtomicLong();
     private final AtomicLong ragEmptyResults = new AtomicLong();
+    private final AtomicLong memoryRecalls = new AtomicLong();
+    private final AtomicLong memoryRecallTotalMs = new AtomicLong();
+    private final AtomicLong memoryRecallEmpty = new AtomicLong();
     private final ArrayBlockingQueue<Long> recentLatencies = new ArrayBlockingQueue<>(LATENCY_RING_SIZE);
 
     // ==================== 消息链路计时 ====================
@@ -121,6 +124,15 @@ public class MetricsService {
         }
     }
 
+    /** 记忆召回：与 RAG 检索分开计数 —— 记忆召回为空说明「没记住」，检索为空说明「没资料」，排查方向不同 */
+    public void recordMemoryRecall(long ms, int hits) {
+        memoryRecalls.incrementAndGet();
+        memoryRecallTotalMs.addAndGet(ms);
+        if (hits <= 0) {
+            memoryRecallEmpty.incrementAndGet();
+        }
+    }
+
     // ==================== 快照（/api/metrics） ====================
 
     public Map<String, Object> snapshot() {
@@ -147,6 +159,9 @@ public class MetricsService {
         m.put("ragRetrievals", ragRetrievals.get());
         m.put("ragAvgMs", ragRetrievals.get() == 0 ? 0 : ragTotalMs.get() / ragRetrievals.get());
         m.put("ragEmptyResults", ragEmptyResults.get());
+        m.put("memoryRecalls", memoryRecalls.get());
+        m.put("memoryRecallAvgMs", memoryRecalls.get() == 0 ? 0 : memoryRecallTotalMs.get() / memoryRecalls.get());
+        m.put("memoryRecallEmpty", memoryRecallEmpty.get());
         return m;
     }
 

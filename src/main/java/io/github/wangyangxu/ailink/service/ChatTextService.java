@@ -109,7 +109,8 @@ public class ChatTextService {
             messages.add(new HashMap<>(msg));
         }
 
-        MemoryService.MemoryInjection injection = memoryService.getInjection(userId);
+        // 以「当前用户消息」为查询做记忆召回：注入的是与本轮相关的记忆，而不是机械的最近 N 条
+        MemoryService.MemoryInjection injection = memoryService.getInjection(userId, lastUserMessage(messages));
         int insertAt = (!messages.isEmpty() && "system".equals(messages.get(0).get("role"))) ? 1 : 0;
 
         if (injection.summary() != null && !injection.summary().isBlank()) {
@@ -122,6 +123,17 @@ public class ChatTextService {
             messages.add(insertAt, systemMsg("[用户笔记]\n- " + String.join("\n- ", injection.notes())));
         }
         return messages;
+    }
+
+    /** 当前问题：快照里最后一条 user 消息（chat() 已把本轮消息写入历史） */
+    private static String lastUserMessage(List<Map<String, Object>> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Map<String, Object> msg = messages.get(i);
+            if ("user".equals(msg.get("role")) && msg.get("content") != null) {
+                return msg.get("content").toString();
+            }
+        }
+        return null;
     }
 
     private static Map<String, Object> systemMsg(String content) {

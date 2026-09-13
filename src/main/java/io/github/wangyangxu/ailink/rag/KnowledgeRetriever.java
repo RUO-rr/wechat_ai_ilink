@@ -9,9 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -22,7 +20,7 @@ import java.util.Objects;
  * <pre>
  *   查询向量化 ─┬─ 向量召回（余弦）
  *               └─ 关键词召回（BM25）
- *                      ↓ 分数各自归一化后加权融合
+ *                      ↓ 分数各自归一化后加权融合（HybridFusion）
  *                   候选融合（按 文档#片段 去重）
  *                      ↓ 可选
  *                   精排（交叉编码器逐对打分）
@@ -34,6 +32,9 @@ import java.util.Objects;
  * <p>
  * <b>为什么不是单路向量检索</b>：中文技术文档里大量「专有名词、字段名、编号」这类字面命中更可靠
  * （向量会把它平滑掉），而语义泛化只有向量能覆盖，两条通道是互补而非替代。
+ * <p>
+ * 召回与融合的下沉实现与长期记忆共用（{@link HybridIndex} / {@link HybridFusion}），
+ * 本类只保留知识库特有的东西：文档配额、字符预算与引用格式。
  */
 @Service
 public class KnowledgeRetriever {
@@ -67,19 +68,6 @@ public class KnowledgeRetriever {
         this.metrics = metricsService;
     }
 
-    /** 融合后的候选（可被精排改写 score，因此用可变对象而非 record） */
-    private static final class FusedHit {
-        private final KnowledgeVectorIndex.Entry entry;
-        private double vectorScore;
-        private double keywordScore;
-        private double score;
-        private String channel = "hybrid";
-
-        private FusedHit(KnowledgeVectorIndex.Entry entry) {
-            this.entry = entry;
-        }
-    }
-
     // ==================== 对外入口 ====================
 
     public RetrievalResult retrieve(String query, int topK) {
@@ -96,7 +84,8 @@ public class KnowledgeRetriever {
                 : index.searchVector(queryVector, indexService.embeddingModelId(), candidates);
         List<KnowledgeVectorIndex.Scored> keywordHits = index.searchKeyword(query, candidates);
 
-        List<FusedHit> fused = fuse(vectorHits, keywordHits);
+        List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> fused =
+                HybridFusion.fuse(vectorHits, keywordHits, props.getVectorWeight());
         boolean reranked = rerank(query, fused);
         List<RetrievedChunk> selected = diversify(fused, k);
         String context = buildContext(selected);
@@ -133,42 +122,16 @@ public class KnowledgeRetriever {
         }
     }
 
-    private List<FusedHit> fuse(List<KnowledgeVectorIndex.Scored> vectorHits,
-                                List<KnowledgeVectorIndex.Scored> keywordHits) {
-        Map<String, FusedHit> byKey = new LinkedHashMap<>();
-        double maxVector = vectorHits.stream().mapToDouble(KnowledgeVectorIndex.Scored::score).max().orElse(0d);
-        double maxKeyword = keywordHits.stream().mapToDouble(KnowledgeVectorIndex.Scored::score).max().orElse(0d);
-
-        for (KnowledgeVectorIndex.Scored hit : vectorHits) {
-            FusedHit fused = byKey.computeIfAbsent(hit.entry().identityKey(), key -> new FusedHit(hit.entry()));
-            fused.vectorScore = normalize(hit.score(), maxVector);
-        }
-        for (KnowledgeVectorIndex.Scored hit : keywordHits) {
-            FusedHit fused = byKey.computeIfAbsent(hit.entry().identityKey(), key -> new FusedHit(hit.entry()));
-            fused.keywordScore = normalize(hit.score(), maxKeyword);
-        }
-
-        double vectorWeight = Math.max(0d, Math.min(1d, props.getVectorWeight()));
-        List<FusedHit> hits = new ArrayList<>(byKey.values());
-        for (FusedHit hit : hits) {
-            hit.score = vectorWeight * hit.vectorScore + (1 - vectorWeight) * hit.keywordScore;
-            hit.channel = hit.vectorScore > 0 && hit.keywordScore > 0 ? "hybrid"
-                    : (hit.vectorScore > 0 ? "vector" : "keyword");
-        }
-        hits.sort(Comparator.comparingDouble((FusedHit h) -> h.score).reversed());
-        return hits;
-    }
-
     /** @return 是否真的做了精排（区分「没开」和「开了但失败」） */
-    private boolean rerank(String query, List<FusedHit> hits) {
+    private boolean rerank(String query, List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> hits) {
         if (hits.size() <= 1) {
             return false;
         }
         List<String> texts = new ArrayList<>(hits.size());
-        for (FusedHit hit : hits) {
-            String heading = hit.entry.heading();
-            texts.add(heading == null || heading.isBlank() ? hit.entry.content()
-                    : heading + "\n" + hit.entry.content());
+        for (HybridFusion.Fused<KnowledgeVectorIndex.Entry> hit : hits) {
+            String heading = hit.payload().heading();
+            texts.add(heading == null || heading.isBlank() ? hit.payload().content()
+                    : heading + "\n" + hit.payload().content());
         }
         List<Double> scores;
         try {
@@ -189,28 +152,29 @@ public class KnowledgeRetriever {
             if (score == null) {
                 continue;
             }
-            FusedHit hit = hits.get(i);
-            hit.score = RERANK_WEIGHT * (score / max) + (1 - RERANK_WEIGHT) * hit.score;
-            hit.channel = "rerank";
+            HybridFusion.Fused<KnowledgeVectorIndex.Entry> hit = hits.get(i);
+            hit.score(RERANK_WEIGHT * (score / max) + (1 - RERANK_WEIGHT) * hit.score());
+            hit.channel(HybridFusion.CHANNEL_RERANK);
         }
-        hits.sort(Comparator.comparingDouble((FusedHit h) -> h.score).reversed());
+        hits.sort((a, b) -> Double.compare(b.score(), a.score()));
         return true;
     }
 
     /** 单文档配额：同一份文档最多占 maxPerDocument 条，避免一份长文档刷满结果。 */
-    private List<RetrievedChunk> diversify(List<FusedHit> hits, int topK) {
+    private List<RetrievedChunk> diversify(List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> hits, int topK) {
         Map<Long, Integer> perDocument = new HashMap<>();
         int limitPerDocument = Math.max(1, props.getMaxPerDocument());
         List<RetrievedChunk> selected = new ArrayList<>();
-        for (FusedHit hit : hits) {
-            int used = perDocument.getOrDefault(hit.entry.documentId(), 0);
+        for (HybridFusion.Fused<KnowledgeVectorIndex.Entry> hit : hits) {
+            KnowledgeVectorIndex.Entry entry = hit.payload();
+            int used = perDocument.getOrDefault(entry.documentId(), 0);
             if (used >= limitPerDocument) {
                 continue;
             }
-            perDocument.put(hit.entry.documentId(), used + 1);
-            selected.add(new RetrievedChunk(hit.entry.documentId(), hit.entry.chunkIndex(),
-                    hit.entry.sourcePath(), hit.entry.title(), hit.entry.heading(),
-                    hit.entry.content(), round(hit.score), hit.channel));
+            perDocument.put(entry.documentId(), used + 1);
+            selected.add(new RetrievedChunk(entry.documentId(), entry.chunkIndex(),
+                    entry.sourcePath(), entry.title(), entry.heading(),
+                    entry.content(), round(hit.score()), hit.channel()));
             if (selected.size() >= topK) {
                 break;
             }
@@ -245,10 +209,6 @@ public class KnowledgeRetriever {
     }
 
     // ==================== 小工具 ====================
-
-    private static double normalize(double score, double max) {
-        return max <= 0d ? 0d : Math.max(0d, Math.min(1d, score / max));
-    }
 
     private static double round(double value) {
         return Math.round(value * 1000d) / 1000d;
