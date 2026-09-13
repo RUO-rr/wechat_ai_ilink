@@ -196,9 +196,9 @@ mvn spring-boot:run
                  ↓ 上层混合召回 / 融合 / 降级不知道 provider 是哪一种
 ```
 
-- **为什么默认不开（实测）**：合成语料十万片段下，向量通道 Qdrant 快 10 倍（p50 3.20ms vs 34.12ms），
-  但**端到端融合只快 7%**（271.70ms vs 292.33ms，瓶颈在内存 BM25）；同时建索引慢 3.7 倍
-  （14.1s vs 3.6s），recall@10 从 1.000（精确解）降到 0.740（近似解）。真实语料只有几百个片段，
+- **为什么默认不开（实测）**：合成语料十万片段下，向量通道 Qdrant 快 8 倍（p50 3.80ms vs 31.00ms），
+  但**端到端融合只快 14%**（199.50ms vs 231.06ms，瓶颈在内存 BM25），p95 反而更差；
+  同时建索引慢 2.9 倍（11.4s vs 3.2s），recall@10 从 1.000（精确解）降到 0.692（近似解）。真实语料只有几百个片段，
   引入向量库是净亏 —— 所以默认留在进程内，Qdrant 作为可切换 provider 保留
 - **怎么开**：起一个 Qdrant（默认 127.0.0.1:6334 gRPC）→ `vectorstore.provider=qdrant`，
   其余看 `vectorstore.qdrant.*`（collection / dimension / api-key / tls / 超时与退避）；
@@ -207,7 +207,7 @@ mvn spring-boot:run
   重复回灌是覆盖不是新增
 - **降级**：远端不可用 → 记一次告警并进入退避窗口，窗口内检索自动只走关键词通道
 - **复现基准**：`mvn -B test -Dtest=VectorStoreBenchmarkTest -Dbench.enabled=true -DargLine=-Xmx3g -Dbench.sizes=10000,100000 -Dbench.dim=256`
-  （产出 `target/bench/vector-store-benchmark.md`）
+  （产出 `target/bench/vector-store-benchmark.md`；一次实跑的完整报告见 [docs/bench/vector-store-benchmark.md](docs/bench/vector-store-benchmark.md)）
 
 ## Roadmap
 
