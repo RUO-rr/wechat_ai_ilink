@@ -10,6 +10,7 @@
 - **上下文持久化**：Redis 缓存 + MySQL 双写，跨轮记忆与文件路径持久化
 - **多模态链路**：图片理解、语音识别（STT）、语音合成（TTS）、文件解析（Tika）
 - **RAG 检索链路**：内置知识资产与用户上传文档统一入知识库 —— 标题感知切分 +（向量 ∥ BM25）混合召回 + 可选精排，返回带来源引用的上下文；`search_knowledge` 工具让模型按需翻资料，而不是把资料全文塞进 prompt
+- **长期记忆语义召回**：记忆读路径复用同一套检索基建 —— 按与当前问题的相关性召回，而不是只取最近 N 条；写路径用余弦相似度做重复兜底，冲突解决仍是 LLM 判定 + supersede 链（可审计）
 
 ## 技术栈
 
@@ -40,6 +41,7 @@ FunctionCallingOrchestrator（迭代式 FC 循环）
         │
         ├── ToolRouter（领域路由 → 工具子集）
         ├── KnowledgeRetriever（向量 + BM25 混合召回 → 带引用上下文）
+        ├── MemoryRetriever（长期记忆语义召回：最近 N 条保底 + 相关性补足）
         ├── ToolRegistry（自动装配 8 个工具）
         └── ConversationHistory（Redis 缓存 + MySQL 双写）
 ```
@@ -54,6 +56,7 @@ src/main/java/io/github/wangyangxu/ailink/
 ├── config/     # 全局配置（Bot、RestTemplate）
 ├── controller/ # 消息入口 + Bot 管理 REST API
 ├── mapper/     # MyBatis Mapper 接口
+├── memory/     # 长期记忆检索（按用户隔离的混合索引 + 相关性召回）
 ├── model/      # 领域模型（BotInstance、ChatMessage...）
 ├── rag/        # RAG 检索链路（切分 / 向量化 / 混合索引 / 混合检索）
 ├── service/    # 核心服务（BotManager / FC 编排 / 对话历史 / 多模态...）
@@ -164,15 +167,33 @@ mvn spring-boot:run
 - **可调参数**：`rag.chunk.*`（切分粒度与重叠）、`rag.retrieve.*`（返回条数 / 候选倍数 / 单文档配额）、
   `rag.fuse.vector-weight`（语义与字面权重）、`rag.context.max-chars`（上下文预算）
 
+## 长期记忆检索（v2.7）
+
+```
+用户消息 ─→ 记忆召回 ─┬─ 保底：最近 N 条（全局偏好不会因为本轮没命中而消失）
+                      └─ 相关：向量 ∥ BM25 混合召回，补足到槽位上限
+                             ↓ 与知识库共用 HybridIndex / HybridFusion
+                      记忆槽 ≤5（fact / preference）    笔记槽 ≤3（note）
+                             ↓
+                与摘要槽（1 条，固定槽位、不参与检索）一起注入 system 消息
+```
+
+- **解决什么问题**：旧读路径按 id 倒序取最近 5 条 —— 用户记忆一多，近期但与当前问题无关的记忆会挤掉真正相关的那条（「我上次说的那个项目」命中不了）
+- **为什么要保底配额**：「回答要简洁」这类全局偏好与任何具体问题都不相似，纯相关性召回会让它在没命中的轮次里消失；「保底 + 相关」各留一部分配额，既稳定又不丢信息
+- **降级**：检索关闭 / 索引装载失败 / 向量模型不可用 → 自动退回纯 recency 注入，回复不会因为检索失败而中断
+- **写入去重**：LLM 判定 new 时先用余弦相似度查一遍同用户已有记忆（阈值 0.92）——answer_style / reply_style 这种同义 dimension 写法不同也能拦住重复；supersede 是 LLM 看过旧记忆后的显式判断，不干预
+- **按需装载**：某用户第一次被访问时才从库里拉他最近的 active 记忆建索引（每人几十条，一次批量向量化），不预热全量、不拖慢启动
+- **可观测与可调**：/api/metrics 增加 memoryRecalls / memoryRecallAvgMs / memoryRecallEmpty；参数 memory.recall.*（融合权重 / 候选倍数 / 保底条数）、memory.dedupe.*（开关与阈值）、memory.index.max-entries-per-user
+
 ## Roadmap
 
 - [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
 - [x] Context Manager：摘要压缩 + 长期记忆（v2.4）
 - [x] RAG 文档知识库：文件入库 → 混合检索 → 带引用回答（v2.6）
-- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG，共 79 个）
+- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索，共 121 个）
 - [x] CI：GitHub Actions 起 MySQL + Redis 服务容器跑 `mvn test`
 - [ ] MCP 客户端接入，连接外部工具生态
-- [ ] 长期记忆复用检索基建（语义召回替代 dimension 精确匹配）
+- [x] 长期记忆复用检索基建：语义召回替代「只取最近 N 条」（v2.7）
 - [ ] 应用容器化部署（Dockerfile + compose 一体化）
 
 ## 致谢
