@@ -209,16 +209,38 @@ mvn spring-boot:run
 - **复现基准**：`mvn -B test -Dtest=VectorStoreBenchmarkTest -Dbench.enabled=true -DargLine=-Xmx3g -Dbench.sizes=10000,100000 -Dbench.dim=256`
   （产出 `target/bench/vector-store-benchmark.md`；一次实跑的完整报告见 [docs/bench/vector-store-benchmark.md](docs/bench/vector-store-benchmark.md)）
 
+## 检索评测（v2.9）
+
+```
+rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
+        ↓  与生产同样的切分（标题感知，maxChars=800 / overlap=120）
+   三通道同口径对照：向量余弦 ∥ BM25 ∥ 混合（0.65 : 0.35）
+        ↓  Hit@1 / Hit@5 / MRR@5，文档级 + 片段级各一套
+   完整实跑报告：docs/bench/rag-eval.md
+```
+
+- **要回答的问题**：「混合检索比单路好多少」不再是口号 —— 每次都能用同一套语料与题目量出来，
+  后续换模型、调权重、改切分参数都有回归锚点
+- **实测结论（离线词法向量，文档级）**：Hit@5 —— BM25 0.962 > 混合 0.885 > 向量 0.846；
+  Hit@1 —— 混合 0.808 最好。离线哈希向量与 BM25 吃同一批 token，混合赢在头部排序、
+  输在尾部召回被向量稀释；权重扫描 w ∈ [0.20, 0.80] 曲线几乎不动（取舍与边界见 D-17）
+- **标注即校验**：`questions.tsv` 每题的「答案字面串」必须真出现在期望文档的片段里，装载时逐条自检，
+  标注写错先失败 —— 不让「标注错了」记成「检索不行」
+- **怎么跑**：`mvn -B test -Dtest=RagEvaluationTest`
+  （产出 `target/bench/rag-eval.md`；`-Drag.eval.vectorWeight=` 可覆盖融合权重）
+
 ## Roadmap
 
 - [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
 - [x] Context Manager：摘要压缩 + 长期记忆（v2.4）
 - [x] RAG 文档知识库：文件入库 → 混合检索 → 带引用回答（v2.6）
-- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索 / 向量库端口，共 135 个）
+- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索 / 向量库端口 / 检索评测，共 136 个）
 - [x] CI：GitHub Actions 起 MySQL + Redis 服务容器跑 `mvn test`
 - [ ] MCP 客户端接入，连接外部工具生态
 - [x] 长期记忆复用检索基建：语义召回替代「只取最近 N 条」（v2.7）
 - [x] 向量库可选接入：RetrievalIndex 端口 + Qdrant 实现（v2.8，实测后默认仍为进程内）
+- [x] 检索质量评测：33 篇公开文档 + 26 题的「向量 / BM25 / 混合」三通道对照（v2.9）
+- [ ] 用真实 embedding 模型复跑检索评测，验证生产融合权重（离线词法向量会低估向量通道）
 - [ ] 应用容器化部署（Dockerfile + compose 一体化）
 
 ## 致谢
