@@ -3,6 +3,8 @@ package io.github.wangyangxu.ailink.controller;
 import io.github.wangyangxu.ailink.config.BotConfiguration;
 import io.github.wangyangxu.ailink.model.BotLifecycleState;
 import io.github.wangyangxu.ailink.service.BotManager;
+import io.github.wangyangxu.ailink.rag.KnowledgeIndexService;
+import io.github.wangyangxu.ailink.rag.KnowledgeRetriever;
 import io.github.wangyangxu.ailink.service.MetricsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,6 +33,12 @@ public class ManagementController {
     @Autowired
     private MetricsService metricsService;
 
+    @Autowired
+    private KnowledgeIndexService knowledgeIndexService;
+
+    @Autowired
+    private KnowledgeRetriever knowledgeRetriever;
+
     /** 健康检查：Bot 运行概览 + JVM 运行时长 */
     @GetMapping("/health")
     public Map<String, Object> health() {
@@ -58,5 +66,19 @@ public class ManagementController {
     @GetMapping("/metrics")
     public Map<String, Object> metrics() {
         return metricsService.snapshot();
+    }
+
+    /** 知识库概览：文档 / 片段 / 向量化比例 / 当前向量模型 —— RAG 链路自检入口 */
+    @GetMapping("/knowledge")
+    public Map<String, Object> knowledge() {
+        KnowledgeIndexService.IndexStats stats = knowledgeIndexService.stats();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("available", knowledgeRetriever.isAvailable());
+        m.put("documents", stats.documents());
+        m.put("chunks", stats.chunks());
+        m.put("vectorizedChunks", stats.vectorizedChunks());
+        m.put("dimensions", stats.dimensions());
+        m.put("embeddingModel", stats.embeddingModelId());
+        return m;
     }
 }

@@ -100,6 +100,17 @@
             <artifactId>tika-parsers-standard-package</artifactId>
             <version>2.9.0</version>
         </dependency>
+        <!-- LangChain4j：RAG 检索链路（EmbeddingModel / ScoringModel 抽象 + DashScope 集成） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>1.20.0</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-dashscope</artifactId>
+            <version>1.20.0-beta30</version>
+        </dependency>
     </dependencies>
 
     <build>

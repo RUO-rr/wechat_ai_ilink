@@ -47,6 +47,9 @@ public class MetricsService {
     private final AtomicLong memoryFailures = new AtomicLong();
     private final AtomicLong queueDrops = new AtomicLong();
     private final AtomicLong sessionLost = new AtomicLong();
+    private final AtomicLong ragRetrievals = new AtomicLong();
+    private final AtomicLong ragTotalMs = new AtomicLong();
+    private final AtomicLong ragEmptyResults = new AtomicLong();
     private final ArrayBlockingQueue<Long> recentLatencies = new ArrayBlockingQueue<>(LATENCY_RING_SIZE);
 
     // ==================== 消息链路计时 ====================
@@ -109,6 +112,15 @@ public class MetricsService {
         sessionLost.incrementAndGet();
     }
 
+    /** RAG 检索：耗时与命中数（空结果单独计数，用来判断「知识库里到底有没有东西」） */
+    public void recordRetrieval(long ms, int hits) {
+        ragRetrievals.incrementAndGet();
+        ragTotalMs.addAndGet(ms);
+        if (hits <= 0) {
+            ragEmptyResults.incrementAndGet();
+        }
+    }
+
     // ==================== 快照（/api/metrics） ====================
 
     public Map<String, Object> snapshot() {
@@ -132,6 +144,9 @@ public class MetricsService {
         m.put("memoryFailures", memoryFailures.get());
         m.put("queueDrops", queueDrops.get());
         m.put("sessionLost", sessionLost.get());
+        m.put("ragRetrievals", ragRetrievals.get());
+        m.put("ragAvgMs", ragRetrievals.get() == 0 ? 0 : ragTotalMs.get() / ragRetrievals.get());
+        m.put("ragEmptyResults", ragEmptyResults.get());
         return m;
     }
 

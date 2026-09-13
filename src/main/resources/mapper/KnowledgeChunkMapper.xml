@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.wangyangxu.ailink.mapper.KnowledgeChunkMapper">
+
+    <insert id="insertBatch">
+        INSERT INTO knowledge_chunk
+            (document_id, chunk_index, heading, content, embedding, dimension, embedding_model)
+        VALUES
+        <foreach collection="chunks" item="c" separator=",">
+            (#{c.documentId}, #{c.chunkIndex}, #{c.heading}, #{c.content}, #{c.embedding}, #{c.dimension}, #{c.embeddingModel})
+        </foreach>
+    </insert>
+
+    <select id="findByDocumentId" resultType="io.github.wangyangxu.ailink.model.KnowledgeChunk">
+        SELECT id, document_id, chunk_index, heading, content, embedding, dimension, embedding_model, created_at
+        FROM knowledge_chunk
+        WHERE document_id = #{documentId}
+        ORDER BY chunk_index
+    </select>
+
+    <select id="findAll" resultType="io.github.wangyangxu.ailink.model.KnowledgeChunk">
+        SELECT id, document_id, chunk_index, heading, content, embedding, dimension, embedding_model, created_at
+        FROM knowledge_chunk
+        ORDER BY document_id, chunk_index
+    </select>
+
+    <delete id="deleteByDocumentId">
+        DELETE FROM knowledge_chunk WHERE document_id = #{documentId}
+    </delete>
+
+    <select id="countAll" resultType="int">
+        SELECT COUNT(*) FROM knowledge_chunk
+    </select>
+</mapper>
