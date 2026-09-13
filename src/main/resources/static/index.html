@@ -1,254 +1,1449 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot 管理面板</title>
-    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-    <style>
+    <meta name="color-scheme" content="light">
+    <title>Bot 管理面板 · AI Link</title>
+    <script src="vendor/qrcode.min.js"></script>
+     <style>
+        :root {
+            --bg-0: #ffffff;
+            --text-1: #0f172a;
+            --text-2: rgba(15, 23, 42, .68);
+            --text-3: rgba(15, 23, 42, .45);
+            --line: rgba(15, 23, 42, .10);
+            --line-strong: rgba(15, 23, 42, .18);
+            --glass: rgba(255, 255, 255, .62);
+            --glass-strong: rgba(255, 255, 255, .9);
+            --primary: #2563eb;
+            --green: #10b981;
+            --red: #ef4444;
+            --amber: #f59e0b;
+            --radius: 18px;
+            --shadow: 0 16px 40px rgba(15, 23, 42, .10);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; padding: 24px; }
-        h1 { text-align: center; margin-bottom: 24px; color: #1a1a1a; font-size: 24px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-        .card h3 { margin-bottom: 12px; color: #333; font-size: 16px; }
-        .form-row { display: flex; gap: 10px; }
-        .form-row input { flex: 1; padding: 10px 14px; border: 1px solid #d9d9d9; border-radius: 8px; font-size: 14px; outline: none; }
-        .form-row input:focus { border-color: #1677ff; }
-        button { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; transition: all .2s; }
-        .btn-primary { background: #1677ff; color: #fff; }
-        .btn-primary:hover { background: #4096ff; }
-        .btn-danger { background: #ff4d4f; color: #fff; }
-        .btn-danger:hover { background: #ff7875; }
-        .btn-small { padding: 6px 12px; font-size: 12px; }
-        .btn-outline { background: #fff; color: #1677ff; border: 1px solid #1677ff; }
-        .btn-outline:hover { background: #e6f4ff; }
-        .bot-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }
+        html, body { min-height: 100%; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+            color: var(--text-1);
+            background: radial-gradient(circle at center, #ffffff 0%, #f2f4f8 100%);
+            overflow-x: hidden;
+        }
+
+        /* ── React Bits <Particles /> 全屏背景 ── */
+        #particles {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+        }
+        .particles-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        .particles-container canvas { display: block; }
+
+        .page {
+            position: relative;
+            z-index: 1;
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 0 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── 首屏落地：Create Bot + 标签输入，呈“二”字分布，居中屏幕中下方 ── */
+        .landing {
+            flex: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 0 20px;
+            position: relative;
+            height: 100vh;
+            height: 100dvh;
+            animation: fadeIn .5s ease both;
+            transition: min-height .55s cubic-bezier(.4, 0, .2, 1), padding .55s cubic-bezier(.4, 0, .2, 1);
+        }
+        .landing-copy {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 18px;
+            max-width: 760px;
+            /* 整组上移一个卡片高度，为展开的二维码卡片留出空间 */
+            transform: translateY(-150px);
+        }
+        .landing-form {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 8vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 18px;
+        }
+        .eyebrow {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .32em;
+            text-transform: uppercase;
+            color: var(--primary);
+        }
+
+        /* ── 标题与简介 ── */
+        .headline {
+            font-size: clamp(30px, 5.4vw, 52px);
+            font-weight: 800;
+            line-height: 1.15;
+            letter-spacing: -0.01em;
+            color: var(--text-1);
+        }
+        .headline .accent { color: var(--primary); }
+        .intro {
+            font-size: 15px;
+            line-height: 1.75;
+            color: var(--text-2);
+            max-width: 46ch;
+        }
+
+        .landing input {
+            flex: none;
+            width: 100%;
+            text-align: center;
+        }
+
+        /* ── 翻转卡片：正面表单 / 背面二维码 ──
+         * 展开动画借鉴 ScrollExpand 的“画框展开”思路，不用滚轮驱动，
+         * 创建 Bot 成功后自动播放约 1 秒的展开 */
+        .flip-card {
+            position: relative;
+            width: 340px;
+            height: 150px;
+            perspective: 1200px;
+            transition: width 1s cubic-bezier(.16, 1, .3, 1), height 1s cubic-bezier(.16, 1, .3, 1);
+        }
+        .flip-card.expanded { width: 400px; height: min(460px, 36vh); }
+        .flip-card__inner {
+            position: absolute;
+            inset: 0;
+            transform-style: preserve-3d;
+            transition: transform .6s cubic-bezier(.45, .1, .25, 1);
+        }
+        .flip-card.flipped .flip-card__inner { transform: rotateY(180deg); }
+        .flip-card__face {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 16px 20px;
+            border-radius: 20px;
+            backface-visibility: hidden;
+            -webkit-backface-visibility: hidden;
+            background: rgba(255, 255, 255, .38);
+            backdrop-filter: blur(18px) saturate(150%);
+            -webkit-backdrop-filter: blur(18px) saturate(150%);
+            border: 1px solid rgba(37, 99, 235, .2);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, .7),
+                0 20px 45px rgba(15, 23, 42, .12);
+        }
+        @media (prefers-reduced-transparency: reduce) {
+            .flip-card__face {
+                background: #ffffff;
+                backdrop-filter: none;
+                -webkit-backdrop-filter: none;
+            }
+        }
+        .flip-card__front { z-index: 2; }
+        .flip-card__back {
+            transform: rotateY(180deg);
+            justify-content: flex-start;
+            text-align: center;
+            gap: 8px;
+        }
+        .qr-card-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text-1);
+        }
+        .qr-card-box {
+            flex: 1;
+            width: 100%;
+            min-height: 216px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #fff;
+            border: 1px solid rgba(15, 23, 42, .08);
+            border-radius: 14px;
+            padding: 8px;
+            transform: scale(1.06);
+            transition: transform 1s cubic-bezier(.16, 1, .3, 1);
+        }
+        .flip-card.expanded .qr-card-box { transform: scale(1); }
+        .qr-card-tip {
+            font-size: 12px;
+            color: var(--text-3);
+        }
+        .qr-card-back {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 12px;
+            color: var(--primary);
+            cursor: pointer;
+        }
+        .qr-card-back:hover { text-decoration: underline; }
+
+        /* ── 创建 Bot 按钮（原 SpecularButton 描边已移除，改为简洁实心按钮） ── */
+        .create-button {
+            width: min(100px, 100%);
+            padding: 14px 10px;
+            border: none;
+            border-radius: 12px;
+            font-family: inherit;
+            font-size: .9rem;
+            font-weight: 600;
+            line-height: 1;
+            color: #fff;
+            background: var(--primary);
+            cursor: pointer;
+            white-space: nowrap;
+            box-shadow: 0 8px 20px rgba(37, 99, 235, .28);
+            transition: transform .15s ease, box-shadow .15s ease;
+        }
+        .create-button:hover {
+            box-shadow: 0 10px 26px rgba(37, 99, 235, .4);
+            transform: translateY(-1px);
+        }
+        .create-button:active { transform: scale(.97); }
+        .create-button:focus-visible {
+            outline: 2px solid rgba(37, 99, 235, .4);
+            outline-offset: 3px;
+        }
+
+        /* ── 管理面板：ScrollExpand 式画框展开 + 背景变焦 ── */
+        .manage-stage {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 4;
+            overflow: hidden;
+        }
+        body.view-manage .manage-stage { display: block; }
+        body.view-manage .manage-frame { animation: frameExpand 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.view-leave .manage-frame { animation: frameShrink 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.view-manage .panel-inner { animation: compZoomIn 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.view-leave .panel-inner { animation: compZoomOut 1s cubic-bezier(.22, 1, .36, 1) both; }
+
+        .manage-frame {
+            position: absolute;
+            inset: 0;
+            clip-path: inset(0 0 0 0 round 0px);
+        }
+        .panel-inner {
+            position: absolute;
+            inset: 0;
+            overflow-y: auto;
+            margin: 0 auto;
+            max-width: 880px;
+            padding: 48px 20px 100px;
+        }
+        .panel-inner > * { opacity: 0; }
+        body.view-manage .panel-inner > * { animation: contentFadeIn .5s ease .45s both; }
+        body.view-leave .panel-inner > * { animation: contentFadeOut .3s ease both; }
+
+        @keyframes frameExpand {
+            from { clip-path: inset(24% 30% 24% 30% round 24px); }
+            to { clip-path: inset(0 0 0 0 round 0px); }
+        }
+        @keyframes frameShrink {
+            from { clip-path: inset(0 0 0 0 round 0px); }
+            to { clip-path: inset(24% 30% 24% 30% round 24px); }
+        }
+        @keyframes contentFadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes contentFadeOut {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+        body.view-manage #particles { animation: bgZoomIn 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.view-leave #particles { animation: bgZoomOut 1s cubic-bezier(.22, 1, .36, 1) both; }
+        @keyframes bgZoomIn {
+            from { transform: scale(2.0); }
+            to { transform: scale(1); }
+        }
+        @keyframes bgZoomOut {
+            from { transform: scale(1); }
+            to { transform: scale(2.0); }
+        }
+        @keyframes compZoomIn {
+            from { transform: scale(2.0); }
+            to { transform: scale(1); }
+        }
+        @keyframes compZoomOut {
+            from { transform: scale(1); }
+            to { transform: scale(2.0); }
+        }
+        /* ── 首页也走同一套动画：退场缩小、进场放大（与管理面板同时进行） ── */
+        body.home-leave .landing { animation: homeExit 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.home-enter .landing { animation: homeEnter 1s cubic-bezier(.22, 1, .36, 1) both; }
+        body.landing-gone .landing { display: none; }
+        @keyframes homeExit {
+            from { clip-path: inset(0 0 0 0 round 0px); transform: scale(1); opacity: 1; }
+            to { clip-path: inset(24% 30% 24% 30% round 24px); transform: scale(0.5); opacity: 0; }
+        }
+        @keyframes homeEnter {
+            from { clip-path: inset(24% 30% 24% 30% round 24px); transform: scale(0.5); opacity: 0; }
+            to { clip-path: inset(0 0 0 0 round 0px); transform: scale(1); opacity: 1; }
+        }
+
+        /* ── 顶部 ── */
+        .hero {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 28px;
+            animation: fadeUp .5s ease both;
+        }
+        .logo {
+            width: 52px;
+            height: 52px;
+            border-radius: 15px;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 10px 26px rgba(37, 99, 235, .4);
+            flex-shrink: 0;
+        }
+        .hero h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: .3px;
+            background: linear-gradient(90deg, #0f172a, var(--primary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .hero p {
+            margin-top: 5px;
+            font-size: 13px;
+            color: var(--text-3);
+        }
+
+        /* ── 统计卡片 ── */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 14px;
+            margin-bottom: 18px;
+            animation: fadeUp .5s ease .06s both;
+        }
+        .stat-card {
+            background: var(--glass);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 16px 18px;
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-3);
+            letter-spacing: .5px;
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+        }
+        .stat-value.green { color: var(--green); }
+        .stat-value.red { color: var(--red); }
+
+        /* ── 玻璃卡片 ── */
+        .card {
+            background: var(--glass);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            padding: 22px;
+            margin-bottom: 18px;
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            box-shadow: var(--shadow);
+            animation: fadeUp .5s ease .12s both;
+        }
+        .card + .card { animation-delay: .18s; }
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .card-head h3 { font-size: 16px; font-weight: 700; }
+        .hint { font-size: 12px; color: var(--text-3); font-weight: 400; }
+        .count-badge {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 2px 9px;
+            border-radius: 999px;
+            background: var(--glass);
+            border: 1px solid var(--line);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-2);
+            vertical-align: 2px;
+        }
+
+        /* ── 表单 ── */
+        input {
+            flex: 1;
+            min-width: 0;
+            padding: 12px 16px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, .8);
+            color: var(--text-1);
+            font-size: 14px;
+            outline: none;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        input::placeholder { color: var(--text-3); }
+        input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+        }
+
+        /* ── 按钮 ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 11px 20px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #fff;
+            white-space: nowrap;
+            transition: transform .15s ease, box-shadow .15s ease, background .2s ease;
+        }
+        .btn:active { transform: scale(.97); }
+        .btn-danger {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            box-shadow: 0 8px 20px rgba(239, 68, 68, .3);
+        }
+        .btn-danger:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 26px rgba(239, 68, 68, .45);
+        }
+        .btn-ghost {
+            background: #ffffff;
+            border: 1px solid var(--line-strong);
+            color: var(--text-1);
+        }
+        .btn-ghost:hover {
+            background: #f1f5f9;
+            border-color: var(--line-strong);
+        }
+        .btn-small { padding: 7px 12px; font-size: 12px; border-radius: 10px; }
+
+        /* ── Bot 列表 ── */
+        .bot-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 12px;
+            border-radius: 12px;
+            border-bottom: 1px solid var(--line);
+            transition: background .2s;
+        }
         .bot-item:last-child { border-bottom: none; }
-        .bot-info { flex: 1; }
-        .bot-info .bot-id { font-weight: 600; color: #1a1a1a; }
-        .bot-info .bot-meta { font-size: 12px; color: #999; margin-top: 4px; }
-        .bot-actions { display: flex; gap: 8px; }
-        .state-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
-        .state-ONLINE { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
-        .state-QR_READY { background: #e6f4ff; color: #1677ff; border: 1px solid #91caff; }
-        .state-ERROR { background: #fff2f0; color: #ff4d4f; border: 1px solid #ffccc7; }
-        .state-QR_EXPIRED { background: #fffbe6; color: #faad14; border: 1px solid #ffe58f; }
-        .state-UNINITIALIZED { background: #f5f5f5; color: #999; border: 1px solid #d9d9d9; }
-        .qr-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
-        .qr-modal.active { display: flex; }
-        .qr-content { background: #fff; border-radius: 12px; padding: 24px; max-width: 420px; width: 90%; text-align: center; position: relative; }
-        .qr-content h3 { margin-bottom: 16px; }
-        .qr-img-wrap { display: flex; justify-content: center; align-items: center; min-height: 260px; margin-bottom: 16px; }
+        .bot-item:hover { background: var(--glass); }
+        .bot-info { flex: 1; min-width: 0; }
+        .bot-id {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .bot-meta {
+            font-size: 12px;
+            color: var(--text-3);
+            margin-top: 5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .bot-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+        .state-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            border: 1px solid var(--line);
+            background: #f8fafc;
+        }
+        .state-badge::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        .state-ONLINE { color: var(--green); }
+        .state-ONLINE::before { animation: pulse 2s ease infinite; }
+        .state-QR_READY { color: #7dd3fc; }
+        .state-QR_EXPIRED { color: var(--amber); }
+        .state-ERROR { color: var(--red); }
+        .state-UNINITIALIZED { color: var(--text-3); }
+
+        .empty {
+            text-align: center;
+            color: var(--text-3);
+            padding: 30px 0;
+            font-size: 14px;
+        }
+
+        /* ── 二维码弹窗 ── */
+        .qr-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: rgba(15, 23, 42, .35);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+        .qr-modal.active { display: flex; animation: fadeIn .2s ease; }
+        .qr-content {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, .08);
+            border-radius: 20px;
+            padding: 28px 24px 22px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            animation: popIn .25s ease;
+        }
+        .qr-content h3 { font-size: 17px; font-weight: 700; }
+        .qr-img-wrap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 276px;
+            margin: 18px 0 14px;
+            background: #fff;
+            border-radius: 14px;
+            padding: 18px;
+        }
         .qr-img-wrap canvas, .qr-img-wrap img { border-radius: 8px; }
-        .qr-loading { color: #999; font-size: 14px; }
-        .qr-close { position: absolute; top: 12px; right: 16px; font-size: 20px; cursor: pointer; color: #999; }
-        .qr-close:hover { color: #333; }
-        .qr-tip { font-size: 12px; color: #999; margin-top: 12px; }
-        .empty { text-align: center; color: #999; padding: 24px; }
-        .health-bar { display: flex; gap: 16px; justify-content: center; margin-bottom: 16px; font-size: 14px; }
-        .health-bar span { padding: 4px 12px; border-radius: 6px; background: #fafafa; }
-        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 14px; z-index: 200; display: none; }
-        .toast.success { background: #52c41a; }
-        .toast.error { background: #ff4d4f; }
+        .qr-loading { color: var(--text-3); font-size: 14px; }
+        .qr-close {
+            position: absolute;
+            top: 14px;
+            right: 18px;
+            font-size: 22px;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--text-3);
+            transition: color .2s;
+            background: none;
+            border: none;
+            padding: 0;
+        }
+        .qr-close:hover { color: var(--text-1); }
+        .qr-tip { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+        /* ── Toast ── */
+        .toast {
+            position: fixed;
+            top: 22px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            padding: 12px 22px;
+            border-radius: 999px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            z-index: 200;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .25s, transform .25s;
+        }
+        .toast.show { opacity: 1; transform: translateX(-50%); }
+        .toast.success { background: rgba(16, 185, 129, .92); box-shadow: 0 10px 30px rgba(16, 185, 129, .35); }
+        .toast.error { background: rgba(239, 68, 68, .92); box-shadow: 0 10px 30px rgba(239, 68, 68, .4); }
+
+        footer {
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-3);
+            padding: 30px 0 48px;
+        }
+
+        /* ── 页面指示器：屏幕右侧两个小竖条，拖动切换，悬停放大 ── */
+        .page-switcher {
+            position: fixed;
+            right: 18px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 90;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 18px;
+            padding: 14px 12px;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .page-switcher__bar {
+            width: 8px;
+            height: 26px;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, .18);
+            transition: transform .25s ease, background .25s ease;
+        }
+        .page-switcher__bar:hover { transform: scale(1.6); }
+        .page-switcher__bar.active { background: var(--primary); }
+
+        @media (max-width: 640px) {
+            .page-switcher { right: 10px; }
+        }
+
+        ::-webkit-scrollbar { width: 10px; }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(15, 23, 42, .18);
+            border-radius: 999px;
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(14px); }
+            to { opacity: 1; transform: none; }
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes popIn {
+            from { opacity: 0; transform: scale(.94); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes pulse { 50% { opacity: .4; } }
+
+        @media (max-width: 640px) {
+            .page { padding: 26px 14px 48px; }
+            .hero h1 { font-size: 23px; }
+            .stats { grid-template-columns: 1fr; }
+            .form-row { flex-direction: column; }
+            .bot-item { flex-direction: column; align-items: flex-start; }
+            .bot-actions { width: 100%; }
+            .bot-actions .btn { flex: 1; }
+            .flip-card { width: min(340px, 100%); }
+            .flip-card.expanded { width: min(360px, 100%); height: min(440px, 40vh); }
+        }
     </style>
 </head>
 <body>
-<div class="container">
-    <h1>Bot 管理面板</h1>
+    <div id="particles" aria-hidden="true"></div>
 
-    <div class="health-bar" id="healthBar"></div>
-
-    <div class="card">
-        <h3>创建新 Bot</h3>
-        <div class="form-row">
-            <input type="text" id="labelInput" placeholder="标签（可选），如：办公机" />
-            <button class="btn-primary" onclick="createBot()">创建并登录</button>
-        </div>
-    </div>
-
-    <div class="card">
-        <h3>Bot 列表 <button class="btn-outline btn-small" onclick="loadBots()" style="margin-left:8px;">刷新</button></h3>
-        <div id="botList"><div class="empty">加载中...</div></div>
-    </div>
-</div>
-
-<div class="qr-modal" id="qrModal">
-    <div class="qr-content">
-        <span class="qr-close" onclick="closeQr()">&times;</span>
-        <h3 id="qrTitle">扫码登录</h3>
-        <div class="qr-img-wrap" id="qrImgWrap">
-            <span class="qr-loading">二维码生成中...</span>
-        </div>
-        <div class="qr-tip">打开微信 → 扫一扫 → 对准上方二维码</div>
-    </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-const API = '';
-let qrPollTimer = null; // 二维码轮询定时器
-
-function showToast(msg, type) {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.className = 'toast ' + type;
-    t.style.display = 'block';
-    setTimeout(() => t.style.display = 'none', 3000);
-}
-
-/** 将二维码内容渲染为可扫描的图片 */
-function renderQrImage(text) {
-    const wrap = document.getElementById('qrImgWrap');
-    wrap.innerHTML = '';
-    new QRCode(wrap, {
-        text: text,
-        width: 240,
-        height: 240,
-        colorDark: '#000000',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M
-    });
-}
-
-async function createBot() {
-    const label = document.getElementById('labelInput').value.trim();
-    let url = API + '/bot/create';
-    if (label) { url += '?label=' + encodeURIComponent(label); }
-    try {
-        const res = await fetch(url, { method: 'POST' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Bot 创建成功，正在生成二维码...', 'success');
-            document.getElementById('labelInput').value = '';
-            // 自动弹出二维码弹窗并轮询等待
-            openQrModal(data.botId);
-            pollQrCode(data.botId);
-            setTimeout(loadBots, 1500);
-        } else {
-            showToast(data.error || '创建失败', 'error');
-        }
-    } catch (e) { showToast('请求失败: ' + e.message, 'error'); }
-}
-
-/** 打开二维码弹窗 */
-function openQrModal(botId) {
-    document.getElementById('qrTitle').textContent = '扫码登录 [' + botId + ']';
-    document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">二维码生成中...</span>';
-    document.getElementById('qrModal').classList.add('active');
-}
-
-/** 轮询等待二维码生成（创建后 QR 可能还没ready） */
-function pollQrCode(botId) {
-    if (qrPollTimer) clearInterval(qrPollTimer);
-    let attempts = 0;
-    qrPollTimer = setInterval(async () => {
-        attempts++;
-        try {
-            const res = await fetch(API + '/bot/' + botId + '/qr');
-            const data = await res.json();
-            if (data.qrCode) {
-                clearInterval(qrPollTimer);
-                qrPollTimer = null;
-                renderQrImage(data.qrCode);
-                return;
-            }
-        } catch (e) { /* ignore */ }
-        if (attempts > 20) {
-            clearInterval(qrPollTimer);
-            qrPollTimer = null;
-            document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">二维码生成超时，请点击刷新重试</span>';
-        }
-    }, 1000);
-}
-
-async function loadBots() {
-    try {
-        const [botsRes, healthRes] = await Promise.all([
-            fetch(API + '/bot/bots'),
-            fetch(API + '/bot/health')
-        ]);
-        const bots = await botsRes.json();
-        const health = await healthRes.json();
-
-        document.getElementById('healthBar').innerHTML =
-            '<span>总计: ' + health.totalBots + '</span>' +
-            '<span style="color:#52c41a">在线: ' + health.online + '</span>' +
-            '<span style="color:#ff4d4f">异常: ' + health.error + '</span>';
-
-        const list = document.getElementById('botList');
-        if (!bots.length) { list.innerHTML = '<div class="empty">暂无 Bot，请创建一个</div>'; return; }
-
-        list.innerHTML = bots.map(bot => `
-            <div class="bot-item">
-                <div class="bot-info">
-                    <div class="bot-id">${bot.botId}
-                        <span class="state-badge state-${bot.state}">${bot.state}</span>
+    <div class="page">
+        <section class="landing" aria-label="创建 Bot">
+            <div class="landing-copy">
+                <p class="eyebrow">AI Link</p>
+                <h1 class="headline">一个面板，管好所有<span class="accent">微信 Bot</span></h1>
+                <p class="intro">创建、扫码登录、监控状态、随时销毁，一个页面管理所有 Bot。</p>
+            </div>
+            <div class="landing-form">
+                <div class="flip-card" id="flipCard">
+                    <div class="flip-card__inner">
+                        <div class="flip-card__face flip-card__front">
+                            <button type="button" class="create-button" id="createBtn">Create Bot</button>
+                            <input type="text" id="labelInput" placeholder="标签（可选），如：办公机" autocomplete="off" />
+                        </div>
+                        <div class="flip-card__face flip-card__back">
+                            <h4 class="qr-card-title" id="cardQrTitle">扫码登录</h4>
+                            <div class="qr-card-box" id="cardQrBox"><span class="qr-loading">二维码生成中…</span></div>
+                            <p class="qr-card-tip">打开微信 → 扫一扫 → 对准上方二维码</p>
+                            <button type="button" class="qr-card-back" onclick="flipCardBack()">返回创建表单</button>
+                        </div>
                     </div>
-                    <div class="bot-meta">
-                        ${bot.label ? '标签: ' + bot.label + ' | ' : ''}微信: ${bot.wechatUserId || '未扫码'} | 创建: ${new Date(bot.createdAt).toLocaleString()}
-                    </div>
-                </div>
-                <div class="bot-actions">
-                    <button class="btn-outline btn-small" onclick="showQr('${bot.botId}')">二维码</button>
-                    <button class="btn-outline btn-small" onclick="refreshQr('${bot.botId}')">刷新</button>
-                    <button class="btn-danger btn-small" onclick="deleteBot('${bot.botId}')">销毁</button>
                 </div>
             </div>
-        `).join('');
-    } catch (e) { document.getElementById('botList').innerHTML = '<div class="empty">加载失败</div>'; }
-}
+        </section>
 
-/** 点击「二维码」按钮 → 直接渲染二维码图片 */
-async function showQr(botId) {
-    openQrModal(botId);
-    try {
-        const res = await fetch(API + '/bot/' + botId + '/qr');
-        const data = await res.json();
-        if (data.qrCode) {
-            renderQrImage(data.qrCode);
-        } else {
-            document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">' + (data.error || '二维码未生成') + '</span>';
+        <div class="manage-stage" id="manageStage">
+            <div class="manage-frame" id="manageFrame">
+                <div class="panel-inner" id="panel">
+                    <header class="hero">
+                        <div class="logo">
+                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <h1>Bot 管理面板</h1>
+                            <p>AI Link · 微信智能助手多账号统一管理</p>
+                        </div>
+                    </header>
+
+                    <section class="stats" aria-label="运行状态">
+                        <div class="stat-card">
+                            <span class="stat-label">Bot 总数</span>
+                            <span class="stat-value" id="statTotal">–</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">在线</span>
+                            <span class="stat-value green" id="statOnline">–</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">异常</span>
+                            <span class="stat-value red" id="statError">–</span>
+                        </div>
+                    </section>
+
+                    <section class="card">
+                        <div class="card-head">
+                            <h3>Bot 列表 <span class="count-badge" id="botCount">0</span></h3>
+                            <button class="btn btn-ghost btn-small" onclick="loadBots()">刷新</button>
+                        </div>
+                        <div id="botList"><div class="empty">加载中…</div></div>
+                    </section>
+
+                    <footer>AI Link · 粒子背景来自 React Bits <a href="https://www.reactbits.dev" target="_blank"
+                            rel="noopener" style="color: inherit;">Particles</a></footer>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <nav class="page-switcher" id="pageSwitcher" aria-label="页面切换">
+        <span class="page-switcher__bar active" id="swHome" aria-hidden="true"></span>
+        <span class="page-switcher__bar" id="swManage" aria-hidden="true"></span>
+    </nav>
+
+    <div class="qr-modal" id="qrModal" role="dialog" aria-modal="true" aria-label="扫码登录">
+        <div class="qr-content">
+            <button class="qr-close" onclick="closeQr()" aria-label="关闭">&times;</button>
+            <h3 id="qrTitle">扫码登录</h3>
+            <div class="qr-img-wrap" id="qrImgWrap">
+                <span class="qr-loading">二维码生成中…</span>
+            </div>
+            <div class="qr-tip">打开微信 → 扫一扫 → 对准上方二维码</div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module">
+        import { Renderer, Camera, Geometry, Program, Mesh, Plane, Transform } from './vendor/ogl.module.js';
+
+        /* =========================================================
+         * React Bits <Particles /> 组件 · JavaScript + CSS 变体
+         * 依赖：ogl（已本地化为 vendor/ogl.module.js）
+         * 原组件以 React 实现，此处转为原生 JS，着色器与参数完全一致
+         * ========================================================= */
+        const hexToRgb = hex => {
+            hex = hex.replace(/^#/, '');
+            if (hex.length === 3) {
+                hex = hex.split('').map(c => c + c).join('');
+            }
+            const int = parseInt(hex.slice(0, 6), 16);
+            const r = ((int >> 16) & 255) / 255;
+            const g = ((int >> 8) & 255) / 255;
+            const b = (int & 255) / 255;
+            return [r, g, b];
+        };
+
+        /* =========================================================
+         * 水面背景（俯视）+ 缓缓下落的水滴 + 偶发涟漪
+         * 基于原 React Bits Particles 的 OGL 管线改造
+         * ========================================================= */
+        const waterVert = /* glsl */ `
+            attribute vec3 position;
+            attribute vec2 uv;
+
+            uniform mat4 modelMatrix;
+            uniform mat4 viewMatrix;
+            uniform mat4 projectionMatrix;
+
+            varying vec2 vUv;
+
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        const waterFrag = /* glsl */ `
+            precision highp float;
+
+            uniform float uTime;
+            varying vec2 vUv;
+
+            void main() {
+                // 现在的背景色：中心 #ffffff → 四周 #f2f4f8 的径向渐变
+                float d = distance(vUv, vec2(0.5));
+                vec3 center = vec3(1.0);
+                vec3 edge = vec3(0.949, 0.957, 0.973);
+                vec3 base = mix(center, edge, smoothstep(0.0, 1.0, d));
+
+                // 极淡的顶部双色：左上 #E1E7FF，右上 #FEF6FF，向下渐变为底部背景色
+                vec3 topLeft = vec3(0.9176, 0.9271, 0.9647);
+                vec3 topRight = vec3(0.9878, 0.9753, 0.9894);
+                vec3 top = mix(topLeft, topRight, vUv.x);
+                float t = smoothstep(0.15, 0.95, vUv.y);
+                vec3 col = mix(base, top, t);
+
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `;
+
+        const dropVert = /* glsl */ `
+            attribute vec3 position;
+            attribute vec4 random;
+            attribute vec3 color;
+
+            uniform mat4 modelMatrix;
+            uniform mat4 viewMatrix;
+            uniform mat4 projectionMatrix;
+            uniform float uTime;
+            uniform float uSpread;
+            uniform float uBaseSize;
+            uniform float uSizeRandomness;
+            uniform float uFallSpeed;
+
+            varying vec4 vRandom;
+            varying vec3 vColor;
+            varying float vLife;
+
+            void main() {
+                vRandom = random;
+                vColor = color;
+
+                // 生命周期从 0 缓慢走到 1，每个水滴相位错开
+                float life = fract(uTime * uFallSpeed + random.w);
+                vLife = life;
+                float eased = life * life * (3.0 - 2.0 * life);
+
+                // 轨迹缓缓往中间收拢
+                vec3 pos = position * uSpread * (1.0 - eased);
+                pos.x += sin(uTime * 0.4 + random.z * 6.2831) * 0.10 * eased;
+                pos.y += cos(uTime * 0.3 + random.y * 6.2831) * 0.10 * eased;
+                // 从高处缓缓落向水面
+                pos.z = (1.0 - eased) * 2.5;
+
+                vec4 mPos = modelMatrix * vec4(pos, 1.0);
+                vec4 mvPos = viewMatrix * mPos;
+
+                float sizeVar = 0.5 + uSizeRandomness * random.x;
+                // 下落过程中渐渐变小
+                gl_PointSize = max(0.4, (uBaseSize * sizeVar * (1.0 - eased) * 1.4) / length(mvPos.xyz));
+                gl_Position = projectionMatrix * mvPos;
+            }
+        `;
+
+        const dropFrag = /* glsl */ `
+            precision highp float;
+
+            varying vec4 vRandom;
+            varying vec3 vColor;
+            varying float vLife;
+
+            void main() {
+                vec2 uv = gl_PointCoord.xy;
+                float d = length(uv - vec2(0.5));
+                float core = smoothstep(0.5, 0.10, d);
+                float tail = smoothstep(0.0, 0.30, 1.0 - vLife);
+                float a = core * tail * 0.8;
+                if (a < 0.01) {
+                    discard;
+                }
+                gl_FragColor = vec4(vColor, a);
+            }
+        `;
+
+        const ringVert = /* glsl */ `
+            attribute vec3 position;
+            attribute vec2 uv;
+
+            uniform mat4 modelMatrix;
+            uniform mat4 viewMatrix;
+            uniform mat4 projectionMatrix;
+
+            varying vec2 vUv;
+
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        const ringFrag = /* glsl */ `
+            precision highp float;
+
+            uniform float uProgress;
+            uniform float uOpacity;
+            uniform vec3 uColor;
+
+            varying vec2 vUv;
+
+            void main() {
+                vec2 p = vUv - 0.5;
+                float r = length(p) * 2.0;
+                // 只在半径 uProgress 附近形成一圈环带
+                float inner = smoothstep(uProgress - 0.025, uProgress - 0.008, r);
+                float outer = 1.0 - smoothstep(uProgress + 0.008, uProgress + 0.025, r);
+                float ring = inner * outer;
+                float alpha = ring * (1.0 - uProgress) * uOpacity;
+                if (alpha < 0.01) {
+                    discard;
+                }
+                gl_FragColor = vec4(uColor, alpha);
+            }
+        `;
+
+        async function initParticles(container, options = {}) {
+            const particleCount = options.particleCount ?? 300;
+            const particleSpread = options.particleSpread ?? 9;
+            const speed = options.speed ?? 0.075;
+            const particleColors = options.particleColors ?? ['#ffffff', '#e0f2fe'];
+            const moveParticlesOnHover = options.moveParticlesOnHover ?? true;
+            const particleHoverFactor = options.particleHoverFactor ?? 0.6;
+            const particleBaseSize = options.particleBaseSize ?? 160;
+            const sizeRandomness = options.sizeRandomness ?? 0.9;
+            const cameraDistance = options.cameraDistance ?? 20;
+            const pixelRatio = options.pixelRatio ?? 1;
+
+            const reducedMotion = window.matchMedia &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+            const renderer = new Renderer({ dpr: pixelRatio, depth: false, alpha: true });
+            const gl = renderer.gl;
+            gl.clearColor(1, 1, 1, 0);
+
+            const wrap = document.createElement('div');
+            wrap.className = 'particles-container';
+            wrap.appendChild(gl.canvas);
+            container.appendChild(wrap);
+
+            const camera = new Camera(gl, { fov: 15 });
+            camera.position.set(0, 0, cameraDistance);
+
+            // ── 水面（俯视） ──
+            const waterGeometry = new Plane(gl, { width: 1, height: 1 });
+            const waterProgram = new Program(gl, {
+                vertex: waterVert,
+                fragment: waterFrag,
+                uniforms: {
+                    uTime: { value: 0 }
+                },
+                transparent: false,
+                depthTest: false
+            });
+            const water = new Mesh(gl, { geometry: waterGeometry, program: waterProgram });
+
+            const resize = () => {
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+                if (!width || !height) return;
+                renderer.setSize(width, height);
+                const aspect = gl.canvas.width / gl.canvas.height;
+                camera.perspective({ aspect });
+                // 水面平面恰好覆盖视口：uv 的角落即屏幕的角落
+                const halfH = Math.tan((camera.fov * Math.PI) / 360) * cameraDistance;
+                water.scale.set(halfH * 2 * aspect, halfH * 2, 1);
+            };
+            window.addEventListener('resize', resize, false);
+            resize();
+
+            const mouse = { x: 0, y: 0 };
+            const handleMouseMove = e => {
+                const rect = container.getBoundingClientRect();
+                if (!rect.width || !rect.height) return;
+                mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                mouse.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+            };
+            if (moveParticlesOnHover) {
+                window.addEventListener('mousemove', handleMouseMove);
+            }
+
+            // ── 水滴（下落粒子） ──
+            const count = particleCount;
+            const positions = new Float32Array(count * 3);
+            const randoms = new Float32Array(count * 4);
+            const colors = new Float32Array(count * 3);
+            const palette = particleColors && particleColors.length > 0 ? particleColors : ['#ffffff'];
+
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = Math.sqrt(Math.random());
+                positions.set([Math.cos(angle) * radius, Math.sin(angle) * radius, 0], i * 3);
+                randoms.set([Math.random(), Math.random(), Math.random(), Math.random()], i * 4);
+                const col = hexToRgb(palette[Math.floor(Math.random() * palette.length)]);
+                colors.set(col, i * 3);
+            }
+
+            const dropGeometry = new Geometry(gl, {
+                position: { size: 3, data: positions },
+                random: { size: 4, data: randoms },
+                color: { size: 3, data: colors }
+            });
+
+            const dropProgram = new Program(gl, {
+                vertex: dropVert,
+                fragment: dropFrag,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uSpread: { value: particleSpread },
+                    uBaseSize: { value: particleBaseSize * pixelRatio },
+                    uSizeRandomness: { value: sizeRandomness },
+                    uFallSpeed: { value: speed }
+                },
+                transparent: true,
+                depthTest: false
+            });
+            const drops = new Mesh(gl, { mode: gl.POINTS, geometry: dropGeometry, program: dropProgram });
+
+            // ── 涟漪（偶发水滴落入） ──
+            const ringGeometry = new Plane(gl, { width: 1, height: 1 });
+            const RIPPLE_MAX = 8;
+            const ripplePool = [];
+            for (let i = 0; i < RIPPLE_MAX; i++) {
+                const ringProgram = new Program(gl, {
+                    vertex: ringVert,
+                    fragment: ringFrag,
+                        uniforms: {
+                            uProgress: { value: 0 },
+                            uOpacity: { value: 0.5 },
+                            uColor: { value: [0.765, 0.765, 0.765] }
+                        },
+                    transparent: true,
+                    depthTest: false
+                });
+                const mesh = new Mesh(gl, { geometry: ringGeometry, program: ringProgram });
+                mesh.visible = false;
+                ripplePool.push(mesh);
+            }
+            const ripples = [];
+
+            // ── 场景 ──
+            const root = new Transform();
+            root.addChild(water);
+            ripplePool.forEach(mesh => root.addChild(mesh));
+            root.addChild(drops);
+
+            let animationFrameId = 0;
+            let lastTime = performance.now();
+            let elapsed = 0;
+            let nextRippleAt = 700;
+
+            const renderFrame = t => {
+                const delta = Math.min(t - lastTime, 100);
+                lastTime = t;
+                elapsed += delta;
+                const time = elapsed * 0.001;
+
+                dropProgram.uniforms.uTime.value = time;
+                waterProgram.uniforms.uTime.value = time;
+
+                if (moveParticlesOnHover) {
+                    drops.position.x = -mouse.x * particleHoverFactor;
+                    drops.position.y = -mouse.y * particleHoverFactor;
+                } else {
+                    drops.position.x = 0;
+                    drops.position.y = 0;
+                }
+                // 涟漪跟随鼠标移动，强度为雨滴的 40%
+                const rippleHoverX = -mouse.x * particleHoverFactor * 0.4;
+                const rippleHoverY = -mouse.y * particleHoverFactor * 0.4;
+
+                // 偶尔溅起涟漪：模拟水滴落入水面
+                if (ripples.length < RIPPLE_MAX && elapsed >= nextRippleAt) {
+                    nextRippleAt = elapsed + 900 + Math.random() * 1800;
+                    const mesh = ripplePool.find(m => !m.visible);
+                    if (mesh) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const radius = Math.sqrt(Math.random()) * 3.4;
+                        mesh.visible = true;
+                        ripples.push({
+                            mesh,
+                            program: mesh.program,
+                            x: Math.cos(angle) * radius,
+                            y: Math.sin(angle) * radius,
+                            born: elapsed,
+                            duration: (1700 + Math.random() * 900) * 2.5,
+                            maxR: 1.1 + Math.random() * 1.5,
+                            opacity: 0.45 + Math.random() * 0.2
+                        });
+                    }
+                }
+
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const rp = ripples[i];
+                    const p = (elapsed - rp.born) / rp.duration;
+                    if (p >= 1) {
+                        rp.mesh.visible = false;
+                        ripples.splice(i, 1);
+                        continue;
+                    }
+                    const scale = p * rp.maxR * 2;
+                    rp.mesh.scale.set(scale, scale, 1);
+                    rp.mesh.position.set(rp.x + rippleHoverX, rp.y + rippleHoverY, 0.02);
+                    rp.program.uniforms.uProgress.value = p;
+                    rp.program.uniforms.uOpacity.value = rp.opacity * (1 - p);
+                }
+
+                renderer.render({ scene: root, camera });
+            };
+
+            if (reducedMotion) {
+                renderFrame(performance.now());
+            } else {
+                const frame = t => {
+                    animationFrameId = requestAnimationFrame(frame);
+                    renderFrame(t);
+                };
+                animationFrameId = requestAnimationFrame(frame);
+            }
+
+            return () => {
+                window.removeEventListener('resize', resize);
+                if (moveParticlesOnHover) {
+                    window.removeEventListener('mousemove', handleMouseMove);
+                }
+                cancelAnimationFrame(animationFrameId);
+                if (wrap.contains(gl.canvas)) {
+                    wrap.removeChild(gl.canvas);
+                }
+                wrap.remove();
+            };
         }
-    } catch (e) {
-        document.getElementById('qrImgWrap').innerHTML = '<span class="qr-loading">获取二维码失败</span>';
-    }
-}
 
-function closeQr() {
-    document.getElementById('qrModal').classList.remove('active');
-    if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
-}
+        /* =========================================================
+         * 页面应用逻辑
+         * ========================================================= */
+        const API = '';
+        let qrPollTimer = null;
 
-async function refreshQr(botId) {
-    try {
-        const res = await fetch(API + '/bot/' + botId + '/qr/refresh', { method: 'POST' });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.error || '刷新失败', 'error');
-            return;
+        const $ = id => document.getElementById(id);
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+
+        function showToast(msg, type) {
+            const t = $('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + type;
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(() => t.classList.remove('show'), 3000);
         }
-        showToast('正在强制重新扫码...', 'success');
-        // 自动弹出并轮询新二维码
-        openQrModal(botId);
-        pollQrCode(botId);
-        setTimeout(loadBots, 2000);
-    } catch (e) { showToast('刷新失败', 'error'); }
-}
 
-async function deleteBot(botId) {
-    if (!confirm('确定要销毁 ' + botId + ' 吗？')) return;
-    try {
-        await fetch(API + '/bot/' + botId, { method: 'DELETE' });
-        showToast('Bot 已销毁', 'success');
+        /** 将二维码内容渲染为可扫描的图片 */
+        function renderQrImage(text, wrap, size = 240) {
+            wrap.innerHTML = '';
+            new QRCode(wrap, {
+                text: text,
+                width: size,
+                height: size,
+                colorDark: '#000000',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.M
+            });
+        }
+
+        async function createBot() {
+            const label = $('labelInput').value.trim();
+            let url = API + '/bot/create';
+            if (label) { url += '?label=' + encodeURIComponent(label); }
+            try {
+                const res = await fetch(url, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('Bot 创建成功，正在加载二维码…', 'success');
+                    $('labelInput').value = '';
+                    // 先等二维码加载出来，加载成功后再翻转展开
+                    waitQrCode(data.botId, qr => {
+                        renderQrImage(qr, $('cardQrBox'), 200);
+                        flipCardToQr(data.botId);
+                        setTimeout(loadBots, 1700);
+                    });
+                } else {
+                    showToast(data.error || '创建失败', 'error');
+                }
+            } catch (e) { showToast('请求失败: ' + e.message, 'error'); }
+        }
+
+        /** 翻转底部卡片：正面表单翻走，背面二维码翻入，同时自动展开放大 */
+        function flipCardToQr(botId) {
+            $('cardQrTitle').textContent = '扫码登录 [' + botId + ']';
+            const card = $('flipCard');
+            card.classList.add('flipped');
+            card.classList.add('expanded');
+        }
+
+        /** 返回创建表单（翻回正面并收起） */
+        function flipCardBack() {
+            const card = $('flipCard');
+            card.classList.remove('expanded');
+            card.classList.remove('flipped');
+            $('labelInput').focus();
+        }
+
+        /** 页面指示器：首页 / 管理 视图切换（ScrollExpand 式过渡） */
+        const isManageView = () => document.body.classList.contains('view-manage');
+        const currentView = () => isManageView() ? 'manage' : 'home';
+
+        function setActiveBar(view) {
+            $('swHome').classList.toggle('active', view !== 'manage');
+            $('swManage').classList.toggle('active', view === 'manage');
+        }
+
+        let transitioning = false;
+
+        function switchView(view) {
+            const isManage = view === 'manage';
+            if (isManage === isManageView() || transitioning) return;
+            transitioning = true;
+
+            if (isManage) {
+                // 进入管理：首页退场（缩小）+ 管理面板进场（展开放大），同时进行
+                setActiveBar('manage');
+                document.body.classList.remove('view-leave');
+                document.body.classList.add('view-manage');
+                document.body.classList.add('home-leave');
+                window.scrollTo({ top: 0, behavior: 'auto' });
+                loadBots();
+                setTimeout(() => {
+                    document.body.classList.remove('home-leave');
+                    document.body.classList.add('landing-gone');
+                    transitioning = false;
+                }, 1100);
+            } else {
+                // 返回首页：管理面板退场 + 首页进场（放大），同时进行
+                setActiveBar('home');
+                document.body.classList.remove('landing-gone');
+                document.body.classList.add('home-enter');
+                document.body.classList.add('view-leave');
+                setTimeout(() => {
+                    document.body.classList.remove('view-manage');
+                    document.body.classList.remove('view-leave');
+                    document.body.classList.remove('home-enter');
+                    window.scrollTo({ top: 0, behavior: 'auto' });
+                    transitioning = false;
+                }, 1000);
+            }
+        }
+
+        /** 打开二维码弹窗 */
+        function openQrModal(botId) {
+            $('qrTitle').textContent = '扫码登录 [' + botId + ']';
+            $('qrImgWrap').innerHTML = '<span class="qr-loading">二维码生成中…</span>';
+            $('qrModal').classList.add('active');
+        }
+
+        /** 轮询等待二维码生成，成功后回调（创建后 QR 可能还没 ready） */
+        function waitQrCode(botId, onReady) {
+            if (qrPollTimer) clearInterval(qrPollTimer);
+            let attempts = 0;
+            qrPollTimer = setInterval(async () => {
+                attempts++;
+                try {
+                    const res = await fetch(API + '/bot/' + botId + '/qr');
+                    const data = await res.json();
+                    if (data.qrCode) {
+                        clearInterval(qrPollTimer);
+                        qrPollTimer = null;
+                        onReady(data.qrCode);
+                        return;
+                    }
+                } catch (e) { /* ignore */ }
+                if (attempts > 20) {
+                    clearInterval(qrPollTimer);
+                    qrPollTimer = null;
+                    showToast('二维码生成超时，请重试', 'error');
+                }
+            }, 1000);
+        }
+
+        /** 轮询等待二维码并直接渲染到指定容器 */
+        function pollQrCode(botId, wrap) {
+            waitQrCode(botId, qr => renderQrImage(qr, wrap));
+        }
+
+        async function loadBots() {
+            try {
+                const [botsRes, healthRes] = await Promise.all([
+                    fetch(API + '/bot/bots'),
+                    fetch(API + '/bot/health')
+                ]);
+                const bots = await botsRes.json();
+                const health = await healthRes.json();
+
+                $('statTotal').textContent = health.totalBots ?? 0;
+                $('statOnline').textContent = health.online ?? 0;
+                $('statError').textContent = health.error ?? 0;
+                $('botCount').textContent = bots.length;
+
+                const list = $('botList');
+                if (!bots.length) {
+                    list.innerHTML = '<div class="empty">暂无 Bot，请创建一个</div>';
+                    return;
+                }
+
+                list.innerHTML = bots.map(bot => `
+                    <div class="bot-item">
+                        <div class="bot-info">
+                            <div class="bot-id">${esc(bot.botId)}
+                                <span class="state-badge state-${esc(bot.state)}">${esc(bot.state)}</span>
+                            </div>
+                            <div class="bot-meta">
+                                ${bot.label ? '标签: ' + esc(bot.label) + ' | ' : ''}微信: ${esc(bot.wechatUserId || '未扫码')} | 创建: ${new Date(bot.createdAt).toLocaleString()}
+                            </div>
+                        </div>
+                        <div class="bot-actions">
+                            <button class="btn btn-ghost btn-small" onclick="showQr('${esc(bot.botId)}')">二维码</button>
+                            <button class="btn btn-ghost btn-small" onclick="refreshQr('${esc(bot.botId)}')">刷新</button>
+                            <button class="btn btn-danger btn-small" onclick="deleteBot('${esc(bot.botId)}')">销毁</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                $('botList').innerHTML = '<div class="empty">加载失败</div>';
+            }
+        }
+
+        /** 点击「二维码」按钮 → 直接渲染二维码图片 */
+        async function showQr(botId) {
+            openQrModal(botId);
+            try {
+                const res = await fetch(API + '/bot/' + botId + '/qr');
+                const data = await res.json();
+                if (data.qrCode) {
+                    renderQrImage(data.qrCode, $('qrImgWrap'));
+                } else {
+                    $('qrImgWrap').innerHTML = '<span class="qr-loading">' + esc(data.error || '二维码未生成') + '</span>';
+                }
+            } catch (e) {
+                $('qrImgWrap').innerHTML = '<span class="qr-loading">获取二维码失败</span>';
+            }
+        }
+
+        function closeQr() {
+            $('qrModal').classList.remove('active');
+            if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+        }
+
+        async function refreshQr(botId) {
+            try {
+                const res = await fetch(API + '/bot/' + botId + '/qr/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (!data.success) {
+                    showToast(data.error || '刷新失败', 'error');
+                    return;
+                }
+                showToast('正在强制重新扫码…', 'success');
+                // 自动弹出并轮询新二维码
+                openQrModal(botId);
+                pollQrCode(botId, $('qrImgWrap'));
+                setTimeout(loadBots, 2000);
+            } catch (e) { showToast('刷新失败', 'error'); }
+        }
+
+        async function deleteBot(botId) {
+            if (!confirm('确定要销毁 ' + botId + ' 吗？')) return;
+            try {
+                await fetch(API + '/bot/' + botId, { method: 'DELETE' });
+                showToast('Bot 已销毁', 'success');
+                loadBots();
+            } catch (e) { showToast('销毁失败', 'error'); }
+        }
+
+        // 点击遮罩或按 Esc 关闭弹窗
+        $('qrModal').addEventListener('click', e => {
+            if (e.target === $('qrModal')) closeQr();
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && $('qrModal').classList.contains('active')) closeQr();
+        });
+
+        // 鼠标滚轮切换：首页向下滚进入管理；管理页滚到顶部后继续向上滚返回首页
+        window.addEventListener('wheel', e => {
+            if (transitioning || $('qrModal').classList.contains('active')) return;
+            if (!isManageView()) {
+                if (e.deltaY > 0) switchView('manage');
+            } else {
+                const inner = $('panel');
+                if (inner.scrollTop <= 0 && e.deltaY < 0) switchView('home');
+            }
+        }, { passive: true });
+
+        // 列表内联事件与弹窗关闭需要全局可见
+        Object.assign(window, {
+            createBot, loadBots, showQr, refreshQr, deleteBot, closeQr, flipCardBack
+        });
+
+        // 创建 Bot 按钮
+        const createBtn = $('createBtn');
+        createBtn.addEventListener('click', createBot);
+        $('labelInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') createBot();
+        });
+
+        // 初始化 Particles（React Bits 组件效果）
+        initParticles($('particles'), {
+            particleCount: 300,
+            particleSpread: 9,
+            speed: 0.0375,
+            particleColors: ['#c3c3c3'],
+            moveParticlesOnHover: true,
+            particleHoverFactor: 0.6,
+            particleBaseSize: 160,
+            sizeRandomness: 0.9,
+            cameraDistance: 20,
+            pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
+        }).catch(err => console.warn('Particles 初始化失败:', err));
+
+        // 页面加载 + 每 5 秒自动刷新
         loadBots();
-    } catch (e) { showToast('销毁失败', 'error'); }
-}
-
-// 页面加载 + 每 5 秒自动刷新
-loadBots();
-setInterval(loadBots, 5000);
-</script>
+        setInterval(loadBots, 5000);
+    </script>
 </body>
 </html>
