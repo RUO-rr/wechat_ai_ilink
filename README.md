@@ -9,6 +9,7 @@
 - **可插拔工具系统**：策略模式 + Spring 自动装配，8 个工具零侵入扩展（天气 / Word / Excel / PDF / 简历 / 文生图 / 企业查询 / 行业新闻）
 - **上下文持久化**：Redis 缓存 + MySQL 双写，跨轮记忆与文件路径持久化
 - **多模态链路**：图片理解、语音识别（STT）、语音合成（TTS）、文件解析（Tika）
+- **RAG 检索链路**：内置知识资产与用户上传文档统一入知识库 —— 标题感知切分 +（向量 ∥ BM25）混合召回 + 可选精排，返回带来源引用的上下文；`search_knowledge` 工具让模型按需翻资料，而不是把资料全文塞进 prompt
 
 ## 技术栈
 
@@ -20,6 +21,7 @@
 | 多模态 | 阿里百炼 DashScope（文生图 / STT / TTS）、视觉模型 |
 | 文档处理 | Apache POI（Word / Excel）、Apache Tika（文本提取）、LibreOffice（Word→PDF） |
 | 数据服务 | 高德天气、天眼查、Metaso 联网搜索 |
+| 检索（RAG） | LangChain4j（EmbeddingModel / ScoringModel 抽象）、DashScope text-embedding-v4（向量）、gte-rerank（精排，可选） |
 | 消息通道 | wechat-ilink-sdk（GitHub Packages） |
 
 ## 架构概览
@@ -37,6 +39,7 @@ BotManager（多 Bot 生命周期 + 身份管理）
 FunctionCallingOrchestrator（迭代式 FC 循环）
         │
         ├── ToolRouter（领域路由 → 工具子集）
+        ├── KnowledgeRetriever（向量 + BM25 混合召回 → 带引用上下文）
         ├── ToolRegistry（自动装配 8 个工具）
         └── ConversationHistory（Redis 缓存 + MySQL 双写）
 ```
@@ -52,6 +55,7 @@ src/main/java/io/github/wangyangxu/ailink/
 ├── controller/ # 消息入口 + Bot 管理 REST API
 ├── mapper/     # MyBatis Mapper 接口
 ├── model/      # 领域模型（BotInstance、ChatMessage...）
+├── rag/        # RAG 检索链路（切分 / 向量化 / 混合索引 / 混合检索）
 ├── service/    # 核心服务（BotManager / FC 编排 / 对话历史 / 多模态...）
 ├── tool/       # 工具系统（ToolDefinition + 8 个实现）
 └── util/       # 工具类
@@ -106,6 +110,8 @@ CREATE DATABASE ai_ilink CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 | `WEATHER_API_KEY` / `WEATHER_BASE_URL` | 高德天气 | 否 |
 | `LLM_SEARCH_KEY` | Metaso 联网搜索 | 否 |
 | `TIANYANCHA_API_KEY` | 天眼查企业信息 | 否 |
+| `RAG_EMBEDDING_API_KEY` | RAG 向量模型（DashScope text-embedding-v4），缺省复用 `LLM_STT_API_KEY`；都没有时降级为本地词法向量 | 否 |
+| `RAG_RERANK_ENABLED` | 是否开启 gte-rerank 精排（默认 false） | 否 |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | MySQL 账号密码 | 是 |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | MySQL 地址 / 端口 / 库名（默认 localhost:3306/ai_ilink） | 否 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 地址 / 端口 / 密码（默认 localhost:6379/无） | 否 |
@@ -130,14 +136,44 @@ mvn spring-boot:run
 
 > TODO：补充内网穿透（ngrok）接入说明与演示截图。
 
+## RAG 检索链路
+
+```
+内置知识资产 resume-builder/**  ┐
+用户上传文件 data/documents/**  ┴─→ 读取 → SHA-256 指纹去重 → 标题感知切分 → 批量向量化 → 落库 → 内存索引
+                                                                            （向量化失败只降级，不阻断写路径）
+
+提问 ─→ 查询向量化 ─┬─ 向量召回（余弦）
+                    └─ 关键词召回（BM25）
+                           ↓ 两路分数各自归一化后加权融合（默认 0.65 : 0.35）
+                        候选融合去重（按 文档#片段）
+                           ↓ 可选
+                        精排（gte-rerank 逐对打分）
+                           ↓
+                        单文档配额 + 字符预算 → 带「来源文件 + 章节 + 相关性」的上下文
+```
+
+- **两个接入点**：① `search_knowledge` 工具（领域 `general`，任何路由分支都会带上），模型自己决定何时检索；
+  ② `ChatFileService` 收到文件后全文入库，摘要改为「覆盖率采样」（首片段取开头、尾片段取结尾），不再只截前 2000 字
+- **四层降级**：向量模型不可用 → 查询只走关键词；写入时向量化失败 → 片段仍入库（`embedding` 为 NULL）；
+  精排不可用 → 按召回分排序；知识库为空 → 明确告诉模型「不要编造引用」
+- **向量空间隔离**：片段记录 `embedding_model`，检索只比较同模型向量；本地词法哈希向量（无密钥 / CI 场景）
+  与 DashScope 向量互不污染，「换模型 = 重建索引」由 `content_hash + embedding_model` 共同决定
+- **自检接口**：`GET /api/knowledge` 返回文档数 / 片段数 / 向量化比例 / 当前向量模型；
+  `GET /api/metrics` 增加 `ragRetrievals`、`ragAvgMs`、`ragEmptyResults`
+- **可调参数**：`rag.chunk.*`（切分粒度与重叠）、`rag.retrieve.*`（返回条数 / 候选倍数 / 单文档配额）、
+  `rag.fuse.vector-weight`（语义与字面权重）、`rag.context.max-chars`（上下文预算）
+
 ## Roadmap
 
 - [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
+- [x] Context Manager：摘要压缩 + 长期记忆（v2.4）
+- [x] RAG 文档知识库：文件入库 → 混合检索 → 带引用回答（v2.6）
+- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG，共 79 个）
+- [x] CI：GitHub Actions 起 MySQL + Redis 服务容器跑 `mvn test`
 - [ ] MCP 客户端接入，连接外部工具生态
-- [ ] Context Manager：摘要压缩 + 长期记忆
-- [ ] RAG 文档知识库：文件入库 → 向量检索 → 带引用回答
-- [ ] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存）
-- [ ] Docker 化部署 + CI
+- [ ] 长期记忆复用检索基建（语义召回替代 dimension 精确匹配）
+- [ ] 应用容器化部署（Dockerfile + compose 一体化）
 
 ## 致谢
 
