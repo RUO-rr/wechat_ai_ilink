@@ -67,7 +67,7 @@ class KnowledgeRetrieverTest {
     private KnowledgeRetriever retriever(EmbeddingModel model, Reranker reranker) {
         KnowledgeIndexService indexService = mock(KnowledgeIndexService.class);
         when(indexService.embeddingModelId()).thenReturn(MODEL_ID);
-        return new KnowledgeRetriever(props, index, indexService, model, reranker, metrics);
+        return new KnowledgeRetriever(props, new InMemoryRetrievalIndex(index), indexService, model, reranker, metrics);
     }
 
     @Test
@@ -140,7 +140,7 @@ class KnowledgeRetrieverTest {
         KnowledgeVectorIndex empty = new KnowledgeVectorIndex();
         KnowledgeIndexService indexService = mock(KnowledgeIndexService.class);
         when(indexService.embeddingModelId()).thenReturn(MODEL_ID);
-        KnowledgeRetriever retriever = new KnowledgeRetriever(props, empty, indexService, embedder,
+        KnowledgeRetriever retriever = new KnowledgeRetriever(props, new InMemoryRetrievalIndex(empty), indexService, embedder,
                 Reranker.noop(), metrics);
 
         assertTrue(retriever.retrieve("任意问题", 3).isEmpty());

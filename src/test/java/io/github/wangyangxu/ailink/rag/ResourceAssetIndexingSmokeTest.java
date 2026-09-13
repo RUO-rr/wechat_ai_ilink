@@ -53,8 +53,8 @@ class ResourceAssetIndexingSmokeTest {
         }).when(documentMapper).insert(any(KnowledgeDocument.class));
         when(documentMapper.findByPath(any())).thenReturn(null);
 
-        service = new KnowledgeIndexService(props, new TextChunker(props), index, embedder,
-                documentMapper, chunkMapper);
+        service = new KnowledgeIndexService(props, new TextChunker(props), new InMemoryRetrievalIndex(index),
+                embedder, documentMapper, chunkMapper);
     }
 
     @Test
@@ -64,8 +64,8 @@ class ResourceAssetIndexingSmokeTest {
         assertTrue(documents >= 30, "内置资产应全部入库，实际 " + documents);
         assertTrue(index.size() >= documents, "每份文档至少切出一个片段，实际片段 " + index.size());
 
-        KnowledgeRetriever retriever = new KnowledgeRetriever(props, index, service, embedder,
-                Reranker.noop(), new MetricsService());
+        KnowledgeRetriever retriever = new KnowledgeRetriever(props, new InMemoryRetrievalIndex(index), service,
+                embedder, Reranker.noop(), new MetricsService());
         RetrievalResult result = retriever.retrieve("学生简历怎么写项目经历", 3);
 
         assertFalse(result.isEmpty(), "应能从内置资产中召回内容");

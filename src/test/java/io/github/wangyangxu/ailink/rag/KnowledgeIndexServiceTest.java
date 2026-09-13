@@ -52,8 +52,8 @@ class KnowledgeIndexServiceTest {
             document.setId(9L);
             return null;
         }).when(documentMapper).insert(any(KnowledgeDocument.class));
-        service = new KnowledgeIndexService(props, new TextChunker(props), index, embedder,
-                documentMapper, chunkMapper);
+        service = new KnowledgeIndexService(props, new TextChunker(props), new InMemoryRetrievalIndex(index),
+                embedder, documentMapper, chunkMapper);
     }
 
     /** 把分批 insertBatch 的片段汇总起来检查 */
@@ -139,8 +139,8 @@ class KnowledgeIndexServiceTest {
                 throw new IllegalStateException("模型不可用");
             }
         };
-        KnowledgeIndexService degraded = new KnowledgeIndexService(props, new TextChunker(props), index,
-                broken, documentMapper, chunkMapper);
+        KnowledgeIndexService degraded = new KnowledgeIndexService(props, new TextChunker(props),
+                new InMemoryRetrievalIndex(index), broken, documentMapper, chunkMapper);
         when(documentMapper.findByPath(anyString())).thenReturn(null);
 
         KnowledgeIndexService.IndexOutcome outcome = degraded.indexText(
