@@ -11,6 +11,7 @@
 - **多模态链路**：图片理解、语音识别（STT）、语音合成（TTS）、文件解析（Tika）
 - **RAG 检索链路**：内置知识资产与用户上传文档统一入知识库 —— 标题感知切分 +（向量 ∥ BM25）混合召回 + 可选精排，返回带来源引用的上下文；`search_knowledge` 工具让模型按需翻资料，而不是把资料全文塞进 prompt
 - **长期记忆语义召回**：记忆读路径复用同一套检索基建 —— 按与当前问题的相关性召回，而不是只取最近 N 条；写路径用余弦相似度做重复兜底，冲突解决仍是 LLM 判定 + supersede 链（可审计）
+- **向量通道可换存储**：向量落点收成 `RetrievalIndex` 端口，默认进程内，可切换到 Qdrant（HNSW）——切换前后上层检索与融合逻辑不变；默认值由实测决定（见「向量库」章节）
 
 ## 技术栈
 
@@ -23,6 +24,7 @@
 | 文档处理 | Apache POI（Word / Excel）、Apache Tika（文本提取）、LibreOffice（Word→PDF） |
 | 数据服务 | 高德天气、天眼查、Metaso 联网搜索 |
 | 检索（RAG） | LangChain4j（EmbeddingModel / ScoringModel 抽象）、DashScope text-embedding-v4（向量）、gte-rerank（精排，可选） |
+| 向量库（可选） | Qdrant 1.19（HNSW，经 LangChain4j EmbeddingStore 接入；默认不启用） |
 | 消息通道 | wechat-ilink-sdk（GitHub Packages） |
 
 ## 架构概览
@@ -185,15 +187,38 @@ mvn spring-boot:run
 - **按需装载**：某用户第一次被访问时才从库里拉他最近的 active 记忆建索引（每人几十条，一次批量向量化），不预热全量、不拖慢启动
 - **可观测与可调**：/api/metrics 增加 memoryRecalls / memoryRecallAvgMs / memoryRecallEmpty；参数 memory.recall.*（融合权重 / 候选倍数 / 保底条数）、memory.dedupe.*（开关与阈值）、memory.index.max-entries-per-user
 
+## 向量库（v2.8，默认关闭）
+
+```
+向量通道 = RetrievalIndex 端口（写入 / 读取 / 统计收口）
+  ├─ in-memory（默认）：向量与关键词都在堆内，零外部依赖
+  └─ qdrant：向量落 Qdrant HNSW（经 LangChain4j EmbeddingStore），关键词通道仍在堆内
+                 ↓ 上层混合召回 / 融合 / 降级不知道 provider 是哪一种
+```
+
+- **为什么默认不开（实测）**：合成语料十万片段下，向量通道 Qdrant 快 10 倍（p50 3.20ms vs 34.12ms），
+  但**端到端融合只快 7%**（271.70ms vs 292.33ms，瓶颈在内存 BM25）；同时建索引慢 3.7 倍
+  （14.1s vs 3.6s），recall@10 从 1.000（精确解）降到 0.740（近似解）。真实语料只有几百个片段，
+  引入向量库是净亏 —— 所以默认留在进程内，Qdrant 作为可切换 provider 保留
+- **怎么开**：起一个 Qdrant（默认 127.0.0.1:6334 gRPC）→ `vectorstore.provider=qdrant`，
+  其余看 `vectorstore.qdrant.*`（collection / dimension / api-key / tls / 超时与退避）；
+  Qdrant 连不上会降级为进程内并告警，不会影响启动
+- **回灌与幂等**：点 id 由 `UUID v3(文档#片段)` 派生，集合为空时启动自动从库内片段回灌（分批写入），
+  重复回灌是覆盖不是新增
+- **降级**：远端不可用 → 记一次告警并进入退避窗口，窗口内检索自动只走关键词通道
+- **复现基准**：`mvn -B test -Dtest=VectorStoreBenchmarkTest -Dbench.enabled=true -DargLine=-Xmx3g -Dbench.sizes=10000,100000 -Dbench.dim=256`
+  （产出 `target/bench/vector-store-benchmark.md`）
+
 ## Roadmap
 
 - [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
 - [x] Context Manager：摘要压缩 + 长期记忆（v2.4）
 - [x] RAG 文档知识库：文件入库 → 混合检索 → 带引用回答（v2.6）
-- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索，共 121 个）
+- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索 / 向量库端口，共 135 个）
 - [x] CI：GitHub Actions 起 MySQL + Redis 服务容器跑 `mvn test`
 - [ ] MCP 客户端接入，连接外部工具生态
 - [x] 长期记忆复用检索基建：语义召回替代「只取最近 N 条」（v2.7）
+- [x] 向量库可选接入：RetrievalIndex 端口 + Qdrant 实现（v2.8，实测后默认仍为进程内）
 - [ ] 应用容器化部署（Dockerfile + compose 一体化）
 
 ## 致谢
