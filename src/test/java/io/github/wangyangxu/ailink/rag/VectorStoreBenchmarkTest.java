@@ -139,7 +139,8 @@ class VectorStoreBenchmarkTest {
             double recallSum = 0d;
             for (int i = 0; i < queryCount; i++) {
                 long t0 = System.nanoTime();
-                List<KnowledgeVectorIndex.Scored> hits = remoteIndex.searchVector(queries[i], MODEL_ID, topK);
+                // 候选数与内存侧对齐（topK × 3）：两路融合吃同样的候选规模，否则比较的不是同一件事
+                List<KnowledgeVectorIndex.Scored> hits = remoteIndex.searchVector(queries[i], MODEL_ID, topK * 3);
                 long t1 = System.nanoTime();
                 List<KnowledgeVectorIndex.Scored> keywordHits = remoteIndex.searchKeyword(corpus.queryText(i), topK * 3);
                 HybridFusion.fuse(hits, keywordHits, 0.65d);
@@ -267,6 +268,10 @@ class VectorStoreBenchmarkTest {
           .append("，语料规模 ").append(Arrays.toString(sizes)).append("\n");
         sb.append("- 语料为合成向量（簇结构 + 噪声）+ 等长合成片段，四种跑法吃同一份数据\n");
         sb.append("- recall 以进程内暴力检索的 top-k 结果为精确基准\n");
+        sb.append("- 运行环境：").append(System.getProperty("os.name")).append(' ')
+                .append(Runtime.getRuntime().availableProcessors()).append(" 核 / Java ")
+                .append(System.getProperty("java.version")).append(" / 最大堆 ")
+                .append(Runtime.getRuntime().maxMemory() / 1024 / 1024).append(" MB / Qdrant 1.19（本机）\n");
         sb.append("- 「建索引」= 从一堆片段建成整座索引（内存实现是编译倒排，Qdrant 是编译倒排 + 分批灌点），"
                 + "走的是生产启动时的全量重建路径\n\n");
         sb.append(table).append("\n## 内存（JVM 堆，GC 后实测增量）\n\n");
