@@ -44,3 +44,27 @@ jobs:
           cache: maven
       - name: Build and test
         run: mvn -B test
+      # 检索评测报告（离线口径，CI 里可复现）随构建产出，点开即可看结论，而不用翻代码
+      - name: Upload bench reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-reports
+          path: target/bench/*.md
+          if-no-files-found: warn
+
+  # 镜像能否构建出来 —— 开发机没装 Docker，这条作业就是 Dockerfile 的唯一验证
+  docker-build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ai-ilink:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
