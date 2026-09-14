@@ -63,7 +63,7 @@ class RagEvaluationTest {
     private static final int CHUNK_OVERLAP_CHARS = 120;
 
     private final HashingEmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
-    private final TextChunker chunker = chunker();
+    private final TextSplitter splitter = splitter("self");
 
     /** 语料中的一篇文档：id 用相对路径，检索命中后能直接对着来源核对 */
     private record Doc(String id, String title, String text) {}
@@ -83,11 +83,14 @@ class RagEvaluationTest {
     /** 一组指标：Hit@1 / Hit@K / MRR */
     private record Metrics(String label, double hit1, double hitK, double mrr, int questions) {}
 
+    /** 一种切分策略在整份语料上的表现：片段数 + 片段平均长度 + 混合通道的两级指标 */
+    private record SplitterReport(String label, int chunkCount, double avgChunkChars, Metrics doc, Metrics chunk) {}
+
     @Test
     void hybridRetrievalAgainstSingleChannels() throws IOException {
         List<Doc> docs = loadCorpus();
         List<Question> questions = loadQuestions();
-        RetrievalIndex index = buildIndex(docs);
+        RetrievalIndex index = buildIndex(docs, splitter);
         assertTrue(index.chunkCount() > 0, "语料没有产生任何片段，检查切分参数与语料内容");
 
         // 标准答案一致性校验：标注的片段必须真的能在期望文档里找到，否则是标注写错而不是检索失败
@@ -130,7 +133,19 @@ class RagEvaluationTest {
         sweepDoc.forEach((weight, metrics) -> System.out.println("  " + metrics
                 + " | 片段级 Hit@5=" + pct(sweepChunk.get(weight).hitK())));
 
-        writeReport(index, questions, perMode, docLevel, chunkLevel, sweepDoc, sweepChunk);
+        // 切分策略对照：同一份语料、同一批问题、同一条混合通道，只换「怎么切」
+        List<SplitterReport> splitterReports = new ArrayList<>();
+        for (String name : List.of("self", "langchain4j")) {
+            splitterReports.add(evaluateSplitter(name, docs, questions));
+        }
+        System.out.println("  —— 切分器对照（混合通道）——");
+        splitterReports.forEach(report -> System.out.println("  " + report.label()
+                + " | 片段=" + report.chunkCount() + "（均长 " + Math.round(report.avgChunkChars()) + " 字符）"
+                + " | 文档级 Hit@1=" + pct(report.doc().hit1()) + " Hit@5=" + pct(report.doc().hitK())
+                + " MRR=" + num(report.doc().mrr())
+                + " | 片段级 Hit@5=" + pct(report.chunk().hitK())));
+
+        writeReport(index, questions, perMode, docLevel, chunkLevel, sweepDoc, sweepChunk, splitterReports);
 
         // 断言口径（离线词法向量）：混合至少要打赢它融合进来的向量通道，且不能让关键词通道塌方；
         // 「混合 ≥ 纯关键词」在这套口径下不成立 —— 哈希向量与 BM25 吃同一批 token，向量只是噪声来源，
@@ -217,6 +232,36 @@ class RagEvaluationTest {
         };
     }
 
+    /**
+     * 一种切分策略的对照评测：用同一套向量编码、同一批问题、同一条混合通道，只换「怎么切」。
+     * <p>
+     * 这里会再跑一遍标注自检 —— 换了切分器之后，标注的字面串仍必须落在某个片段里。
+     * 如果切分把答案切丢了，那是切分的问题（真问题），不能记到检索头上。
+     */
+    private SplitterReport evaluateSplitter(String name, List<Doc> docs, List<Question> questions) {
+        TextSplitter candidate = splitter(name);
+        RetrievalIndex candidateIndex = buildIndex(docs, candidate);
+        verifyGroundTruth(candidateIndex, questions);
+
+        List<TextChunker.Chunk> allChunks = new ArrayList<>();
+        for (Doc doc : docs) {
+            allChunks.addAll(candidate.split(doc.text()));
+        }
+        double avgChunkChars = allChunks.isEmpty() ? 0d
+                : allChunks.stream().mapToInt(chunk -> chunk.text().length()).average().orElse(0d);
+
+        List<Outcome> outcomes = new ArrayList<>(questions.size());
+        for (Question question : questions) {
+            outcomes.add(evaluate(question, search("hybrid", question.text(), candidateIndex)));
+        }
+        String label = "langchain4j".equalsIgnoreCase(name)
+                ? "LangChain4j DocumentSplitters.recursive"
+                : "自研标题感知切分";
+        return new SplitterReport(label, candidateIndex.chunkCount(), avgChunkChars,
+                metrics(label + " · 文档级", outcomes, Outcome::docRank),
+                metrics(label + " · 片段级", outcomes, Outcome::chunkRank));
+    }
+
     // ==================== 语料与题目装载 ====================
 
     private List<Doc> loadCorpus() throws IOException {
@@ -297,7 +342,7 @@ class RagEvaluationTest {
         return id;
     }
 
-    private RetrievalIndex buildIndex(List<Doc> docs) {
+    private RetrievalIndex buildIndex(List<Doc> docs, TextSplitter textSplitter) {
         List<KnowledgeChunk> chunks = new ArrayList<>();
         Map<Long, KnowledgeDocument> documentsById = new LinkedHashMap<>();
         long documentId = 1L;
@@ -308,7 +353,7 @@ class RagEvaluationTest {
             document.setId(documentId);
             documentsById.put(documentId, document);
             documentIds.put(doc.id(), documentId);
-            for (TextChunker.Chunk piece : chunker.split(doc.text())) {
+            for (TextChunker.Chunk piece : textSplitter.split(doc.text())) {
                 chunks.add(new KnowledgeChunk(documentId, piece.index(), piece.heading(), piece.text(),
                         EmbeddingCodec.encode(embed(piece.text())), DIMENSION,
                         HashingEmbeddingModel.MODEL_NAME));
@@ -324,11 +369,12 @@ class RagEvaluationTest {
         return embedder.embed(text).content().vector();
     }
 
-    private static TextChunker chunker() {
+    /** 切分策略按名字取实现：{@code self} = 自研标题感知切分，{@code langchain4j} = 框架递归拆分 */
+    private static TextSplitter splitter(String name) {
         RagProperties props = new RagProperties();
         ReflectionTestUtils.setField(props, "chunkMaxChars", CHUNK_MAX_CHARS);
         ReflectionTestUtils.setField(props, "chunkOverlapChars", CHUNK_OVERLAP_CHARS);
-        return new TextChunker(props);
+        return "langchain4j".equalsIgnoreCase(name) ? new Langchain4jTextSplitter(props) : new TextChunker(props);
     }
 
     private static String frontMatter(String raw, String key, String fallback) {
@@ -372,15 +418,16 @@ class RagEvaluationTest {
     private void writeReport(RetrievalIndex index, List<Question> questions,
                              Map<String, List<Outcome>> perMode,
                              Map<String, Metrics> docLevel, Map<String, Metrics> chunkLevel,
-                             Map<Double, Metrics> sweepDoc, Map<Double, Metrics> sweepChunk) throws IOException {
+                             Map<Double, Metrics> sweepDoc, Map<Double, Metrics> sweepChunk,
+                             List<SplitterReport> splitterReports) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("# RAG 检索评测：混合 vs 单路\n\n");
         sb.append("由 `RagEvaluationTest` 生成。离线词法向量（`").append(HashingEmbeddingModel.MODEL_NAME)
                 .append("`，").append(DIMENSION).append(" 维），三个通道吃同一份语料、同一批问题。\n\n");
         sb.append("- 语料 ").append(index.chunkCount()).append(" 个片段（公开文档，见 `sources.tsv`）\n");
         sb.append("- 题目 ").append(questions.size()).append(" 条，人工标注「期望文档 + 答案里的字面串」\n");
-        sb.append("- 切分与生产一致：标题感知，maxChars=").append(CHUNK_MAX_CHARS)
-                .append(" / overlap=").append(CHUNK_OVERLAP_CHARS).append("；候选 = topK × 3，融合权重 ")
+        sb.append("- 切分与生产一致：maxChars=").append(CHUNK_MAX_CHARS).append(" / overlap=").append(CHUNK_OVERLAP_CHARS)
+                .append("（主表用自研标题感知切分，对照见「切分器对照」一节）；候选 = topK × 3，融合权重 ")
                 .append(fmt(VECTOR_WEIGHT)).append(" : ").append(fmt(1 - VECTOR_WEIGHT)).append("\n");
         sb.append("- 指标：Hit@1 / Hit@").append(TOP_K).append(" / MRR@").append(TOP_K)
                 .append("；「文档级」= 命中来源文档，「片段级」= 命中含标准答案的片段\n\n");
@@ -411,6 +458,23 @@ class RagEvaluationTest {
                     .append(" | ").append(pct(chunk.hit1())).append(" | ").append(pct(chunk.hitK()))
                     .append(" | ").append(num(chunk.mrr())).append(" |\n");
         }
+
+        sb.append("\n## 切分器对照（同一份语料与题目，走混合通道）\n\n");
+        sb.append("| 切分策略 | 片段数 | 片段均长 | 文档级 Hit@1 | 文档级 Hit@").append(TOP_K)
+                .append(" | 文档级 MRR | 片段级 Hit@1 | 片段级 Hit@").append(TOP_K).append(" | 片段级 MRR |\n");
+        sb.append("|---|---|---|---|---|---|---|---|---|\n");
+        for (SplitterReport report : splitterReports) {
+            sb.append("| ").append(report.label())
+                    .append(" | ").append(report.chunkCount())
+                    .append(" | ").append(Math.round(report.avgChunkChars()))
+                    .append(" | ").append(pct(report.doc().hit1())).append(" | ").append(pct(report.doc().hitK()))
+                    .append(" | ").append(num(report.doc().mrr()))
+                    .append(" | ").append(pct(report.chunk().hit1())).append(" | ").append(pct(report.chunk().hitK()))
+                    .append(" | ").append(num(report.chunk().mrr())).append(" |\n");
+        }
+        sb.append("- 自研切分器先按 Markdown 标题切小节、再降级拆分，片段带标题路径（引用能定位到小节）；\n")
+                .append("  LangChain4j 的 `DocumentSplitters.recursive` 只看段落/句子/字符长度，片段没有标题路径。\n")
+                .append("- 两者产出同一个 DTO，`rag.splitter=self|langchain4j` 切换，检索与融合逻辑一行都不用改。\n");
 
         sb.append("\n## 逐题明细（片段级排名，✗ = top-").append(TOP_K).append(" 未命中）\n\n");
         sb.append("| 题目 | 期望文档 | 向量 | BM25 | 混合 |\n|---|---|---|---|---|\n");
