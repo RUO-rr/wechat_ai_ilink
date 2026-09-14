@@ -59,7 +59,8 @@
         <dependency>
             <groupId>com.alibaba</groupId>
             <artifactId>dashscope-sdk-java</artifactId>
-            <version>2.16.7</version>
+            <!-- 2.22+ 才有 rerank 的 TextReRankParam（gte-rerank 精排需要）；2.16.7 会在精排时装不上类 -->
+            <version>2.22.30</version>
         </dependency>
 
         <!-- MyBatis：ORM 框架 -->

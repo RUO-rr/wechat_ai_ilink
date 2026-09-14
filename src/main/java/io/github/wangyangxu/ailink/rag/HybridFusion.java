@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 双通道分数融合 —— 向量分（余弦 0~1）与关键词分（BM25 无上界）量纲不同，
@@ -29,6 +30,9 @@ public final class HybridFusion {
 
     /** RRF 的平滑常数：取原论文（Cormack et al. 2009）的经验值 60，作用是把名次差距压平，避免第一名通吃 */
     public static final int DEFAULT_RRF_K = 60;
+
+    /** 精排分与召回分的混合权重：精排占 0.8（精排更准但只在少量候选上可用，召回分留 0.2 做兜底） */
+    public static final double DEFAULT_RERANK_WEIGHT = 0.8d;
 
     private HybridFusion() {}
 
@@ -161,6 +165,38 @@ public final class HybridFusion {
                 fused.keywordScore = contribution;
             }
         }
+    }
+
+    /**
+     * 把精排（rerank）分并入召回结果 —— <b>生产链路与评测共用这一份实现</b>，
+     * 否则「评测量到的」和「线上跑的」是两套逻辑，结论没法用。
+     * <p>
+     * 规则：精排分先按<b>本次候选里的最大值</b>归一化（不同模型的分数量纲都不一样，
+     * 有的给 0~1、有的给 0~10），再与召回分按 {@code rerankWeight : (1 - rerankWeight)} 加权，
+     * 最后按最终分倒序。命中通道统一标成 {@code rerank}，方便日志里区分「这条是靠精排上来的」。
+     *
+     * @return 是否真的应用了精排；分数缺失、条数不匹配或最大值非正时返回 {@code false}，调用方按召回分排序
+     */
+    public static <V> boolean applyRerankScores(List<Fused<V>> hits, List<Double> scores, double rerankWeight) {
+        if (hits == null || hits.isEmpty() || scores == null || scores.size() != hits.size()) {
+            return false;
+        }
+        double max = scores.stream().filter(Objects::nonNull).mapToDouble(Double::doubleValue).max().orElse(0d);
+        if (max <= 0d) {
+            return false;
+        }
+        double weight = Math.max(0d, Math.min(1d, rerankWeight));
+        for (int i = 0; i < hits.size(); i++) {
+            Double score = scores.get(i);
+            if (score == null) {
+                continue;
+            }
+            Fused<V> hit = hits.get(i);
+            hit.score(weight * (score / max) + (1 - weight) * hit.score());
+            hit.channel(CHANNEL_RERANK);
+        }
+        hits.sort(Comparator.comparingDouble((Fused<V> hit) -> hit.score()).reversed());
+        return true;
     }
 
     private static double normalize(double score, double max) {

@@ -140,24 +140,9 @@ public class KnowledgeRetriever {
             log.warn("精排调用失败，本次按召回分排序: {}", e.getMessage());
             return false;
         }
-        if (scores == null || scores.size() != hits.size()) {
-            return false;
-        }
-        double max = scores.stream().filter(Objects::nonNull).mapToDouble(Double::doubleValue).max().orElse(0d);
-        if (max <= 0d) {
-            return false;
-        }
-        for (int i = 0; i < hits.size(); i++) {
-            Double score = scores.get(i);
-            if (score == null) {
-                continue;
-            }
-            HybridFusion.Fused<KnowledgeVectorIndex.Entry> hit = hits.get(i);
-            hit.score(RERANK_WEIGHT * (score / max) + (1 - RERANK_WEIGHT) * hit.score());
-            hit.channel(HybridFusion.CHANNEL_RERANK);
-        }
-        hits.sort((a, b) -> Double.compare(b.score(), a.score()));
-        return true;
+        // 混合公式与评测共用一份实现（HybridFusion#applyRerankScores）：
+        // 「评测量到的就是线上跑的」这件事，靠共用代码而不是靠人肉对齐
+        return HybridFusion.applyRerankScores(hits, scores, RERANK_WEIGHT);
     }
 
     /** 单文档配额：同一份文档最多占 maxPerDocument 条，避免一份长文档刷满结果。 */
