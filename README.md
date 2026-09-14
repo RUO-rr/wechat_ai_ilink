@@ -1,5 +1,7 @@
 # ai-ilink · 多 Bot 微信智能助手
 
+[![CI](https://github.com/RUO-rr/wechat_ai_ilink/actions/workflows/ci.yml/badge.svg)](https://github.com/RUO-rr/wechat_ai_ilink/actions/workflows/ci.yml)
+
 一个基于 Spring Boot 的微信多机器人平台，核心是一个**自研的 Function Calling Agent 运行时**：支持多微信账号独立扫码登录、自然语言对话、工具调用、多模态交互（文本 / 图片 / 语音 / 文件），以及 Word / Excel / PDF / 简历等办公文档的生成与处理。
 
 ## 核心亮点
@@ -12,6 +14,18 @@
 - **RAG 检索链路**：内置知识资产与用户上传文档统一入知识库 —— 标题感知切分 +（向量 ∥ BM25）混合召回 + 可选精排，返回带来源引用的上下文；`search_knowledge` 工具让模型按需翻资料，而不是把资料全文塞进 prompt
 - **长期记忆语义召回**：记忆读路径复用同一套检索基建 —— 按与当前问题的相关性召回，而不是只取最近 N 条；写路径用余弦相似度做重复兜底，冲突解决仍是 LLM 判定 + supersede 链（可审计）
 - **向量通道可换存储**：向量落点收成 `RetrievalIndex` 端口，默认进程内，可切换到 Qdrant（HNSW）——切换前后上层检索与融合逻辑不变；默认值由实测决定（见「向量库」章节）
+
+## 面试官 5 分钟（先看这些）
+
+时间有限时按这个顺序看，能最快判断这个项目值不值得聊：
+
+1. **[ARCHITECTURE.md](ARCHITECTURE.md)「一、架构演进路线」**（v2.0 → v2.15）：每段都是「问题 → 候选 → 做法 → 结论」，包含被**否掉**的方案
+2. **[docs/bench/](docs/bench/)**：三份实测报告 —— 向量库选型基准（10 万片段 p50/p95 + recall）、检索评测（36 题 × 2 个向量口径 × 6 条策略）、端到端问答 transcript（问题 → 检索命中 → 回答 → 出处）
+3. **[ARCHITECTURE.md](ARCHITECTURE.md)「五、决策记录」**（D-01 ~ D-23）：每条写清「为什么要」与「为什么不要替代方案」——包括**主动否决自己做了半天的方案**（D-19 读了字节码后否决 `EmbeddingStoreIngestor`）
+4. **跑一遍**：`mvn -B test`（142 个单测，覆盖 FC 编排 / 检索 / 记忆 / 向量库端口 / 端到端问答；无 key 的网络用例自动跳过）
+5. **一键起服务**：见「快速开始 → Docker 一键启动」
+
+一句话概括取法：**能测的都测，不能测的写清边界** —— 每个默认值（向量库开不开、精排开不开、融合用哪种、切分用哪种）背后都有一组数字或一段被记录下来的否决理由。
 
 ## 技术栈
 
@@ -74,34 +88,46 @@ src/main/resources/
 
 ## 快速开始
 
-### 前置条件
+### Docker 一键启动（推荐先走这条）
 
-- JDK 17+
-- Maven 3.9+
-- MySQL 8.4+ 与 Redis 7+：本机安装，或用仓库根目录的 `docker-compose.yml` 一键启动（`docker compose up -d`）
-- GitHub Packages Token：SDK 依赖 `wechat-ilink-sdk` 托管在 GitHub Packages，首次构建需在 `~/.m2/settings.xml` 配置凭据：
-
-```xml
-<settings>
-  <servers>
-    <server>
-      <id>github</id>
-      <username>你的GitHub用户名</username>
-      <password>你的GITHUB_TOKEN（需 read:packages 权限）</password>
-    </server>
-  </servers>
-</settings>
+```bash
+cp .env.example .env      # 至少填 LLM_API_KEY；RAG_EMBEDDING_API_KEY 不填则 RAG 降级为本地词法向量
+docker compose up -d --build
 ```
 
+起来之后：
+
+| 用途 | 命令 / 地址 |
+|---|---|
+| 管理页面 | <http://localhost:8080>（`/api/**` 需要 `X-API-Token` 头，值 = `.env` 里的 `MANAGEMENT_API_TOKEN`） |
+| 健康检查 | `curl -H "X-API-Token: change-me-in-production" http://localhost:8080/api/health` |
+| 看日志 | `docker compose logs -f app` |
+| 停掉 | `docker compose down`（数据在命名卷里，不会丢） |
+
+- **表结构自动创建**：应用启动时执行 `src/main/resources/schema.sql`（`spring.sql.init.mode=always`），首次启动不需要手动跑 SQL
+- **依赖顺序有保障**：`app` 等 MySQL / Redis 的 healthcheck 通过后才启动，容器 healthcheck 打的是 `/api/health`
+- **镜像构建由 CI 验证**：本项目的开发机没装 Docker，所以 `Dockerfile` 的正确性交给 `.github/workflows/ci.yml` 里的 `docker-build` 作业（每次 push 到 main 构建一次，不推送镜像）
+
+### 本机运行（开发用）
+
+#### 前置条件
+
+- JDK 17+、Maven 3.9+
+- MySQL 8.4+ 与 Redis 7+：本机安装，或用仓库根目录的 `docker-compose.yml` 起依赖（`docker compose up -d mysql redis`）
+- **依赖无需额外凭据**：`wechat-ilink-sdk` 已发布到 Maven Central（`io.github.lith0924:wechat-ilink-sdk`），全新环境直接 `mvn package` 即可。
+  `pom.xml` 里仍声明了作者的 GitHub Packages 仓库；没配 token 时 Maven 会尝试它并在日志里留一条 401 警告，随后从 Central 拿到依赖，**可以忽略**。
+  只有当你确实要从 GitHub Packages 拉取时，才需要在 `~/.m2/settings.xml` 里补 `github` server 的 `read:packages` 凭据
 - LibreOffice（可选）：`word_to_pdf` 工具需要，通过 `libreoffice.path` 配置可执行文件路径
 
-首次运行前创建数据库（或使用 docker-compose 自动创建）：
+数据库本身需要存在（用上面的 compose 起 MySQL 时它会自动创建 `ai_ilink`）；**表结构不用手动建** ——
+应用启动时会执行 `src/main/resources/schema.sql`（`spring.sql.init.mode=always`，脚本里全是 `CREATE TABLE IF NOT EXISTS`）。
+自建 MySQL 时先执行：
 
 ```sql
 CREATE DATABASE ai_ilink CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-### 环境变量
+#### 环境变量
 
 所有密钥通过环境变量注入，不写入仓库：
 
@@ -121,7 +147,7 @@ CREATE DATABASE ai_ilink CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | MySQL 地址 / 端口 / 库名（默认 localhost:3306/ai_ilink） | 否 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 地址 / 端口 / 密码（默认 localhost:6379/无） | 否 |
 
-### 构建与运行
+#### 构建与运行
 
 ```bash
 mvn clean package
@@ -253,6 +279,19 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
   印证片段级仍是短板
 - **怎么跑**：`mvn -B test -Dtest=RagEvaluationTest`
   （产出 `target/bench/rag-eval.md`；`-Drag.eval.vectorWeight=` 可覆盖融合权重）
+
+## 技术决策清单（最近 8 条，完整版在 ARCHITECTURE.md）
+
+| 决策 | 结论 | 依据 |
+|---|---|---|
+| D-16 向量库 | 默认留在进程内，Qdrant 作为可切换 provider | 十万片段向量通道快 8 倍，但端到端融合只快 14%、p95 更差、recall@10 从 1.000 掉到 0.692 |
+| D-17 检索评测 | 建评测集 + 分组报数，把「混合更好」从口号变成数字 | [docs/bench/rag-eval.md](docs/bench/rag-eval.md) |
+| D-18 切分器 | 抽 `TextSplitter` 端口，默认仍用自研标题感知切分 | 与 LangChain4j recursive 打平（Hit@5 0.885），但自研带标题路径、排序更好 |
+| D-19 Ingestor | 生产写入路径不接 `EmbeddingStoreIngestor` | 读字节码：它用自动生成的点 id，与「重复灌库幂等覆盖 + MySQL 是权威」冲突 |
+| D-20 融合策略 | 先换策略而不是调权重 | 权重扫描 w ∈ [0.20, 0.80] 没有一档能赢纯 BM25 |
+| D-21 RRF | 保留为召回策略，不设默认 | 赢召回（文档 Hit@5 0.972）、输排头（Hit@1 0.611 vs 0.667） |
+| D-22 精排 | 接上并量化，随后默认开启 | 文档级 Hit@1 0.611 → 0.778、Hit@5 → 1.000；代价 p50 153ms / p95 206ms |
+| D-23 端到端问答 | 只做集成验证，不动生产回答路径 | 换回答路径属于产品行为变更，而回答质量还没有评测口径 |
 
 ## Roadmap
 
