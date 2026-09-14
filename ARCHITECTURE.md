@@ -211,6 +211,28 @@ RAG 的正确落点是文档知识库（见 Roadmap，与长期记忆共用检�
       → 所以断言只守「混合不弱于它融合的向量通道 + 绝对底线」，真实模型下重跑才是验证。
 ```
 
+### v2.9 → v2.10 切分器对照：把「自研切分够不够好」变成可量的问题
+
+```
+问题：从 v2.6 起，文本切分只有一种实现（自研标题感知切分），800/120 这组参数是凭经验定的 ——
+      「切得好不好」既没有参照物，也没有回归口径。换不换成框架的拆分器，纯靠感觉。
+      候选：只留自研 / 全面换成 LangChain4j / 抽端口让两者并存并实测。
+
+做法：把切分抽成 TextSplitter 端口（split(rawText) → List<Chunk>），配置 rag.splitter 二选一：
+      ├─ self（默认）：TextChunker —— 标题感知（Markdown 标题 → 小节 → 段落/句子/硬切 + overlap），
+      │                片段带标题路径，引用能定位到小节
+      └─ langchain4j：Langchain4jTextSplitter —— DocumentSplitters.recursive(maxChars, overlap)，
+                       适配层只做 Document/TextSegment 映射，不掺自研逻辑（掺了对照就不成立）
+      两者产出同一个 DTO：索引、检索、融合、引用拼装一行都不用改；
+      评测对两种切分各建一次索引、跑同一批题，并各自跑一遍标注自检。
+
+结论（离线向量口径，详见 docs/bench/rag-eval.md 的「切分器对照」）：
+      文档级 Hit@5 打平（0.885 : 0.885）；Hit@1 自研 0.808 vs 框架 0.769，MRR 0.846 vs 0.827；
+      框架版片段更少更长（152 个 / 均长 579 字符 vs 171 个 / 548 字符）；
+      关键是框架切分不认识 Markdown 标题 —— 片段没有标题路径，引用定位退化。
+      → 默认留在自研，框架实现作为可切换 provider；什么时候该切，条件写在 D-18。
+```
+
 ## 二、核心技术决策与技术亮点
 
 ### 2.1 Function Calling 工具系统 —— 策略模式 + 动态装配
@@ -595,6 +617,27 @@ supersedes_id(审计链), created_at, updated_at
 - **测试**：1 个评测用例，内部跑满 26 题 × 3 通道 × 5 个权重；`-Drag.eval.vectorWeight=`、
   `-Drag.eval.corpus=`、`-Drag.eval.report=` 可覆盖权重、语料目录与报告路径
 
+### 2.18 切分器端口与 LangChain4j 原生切分对照（v2.10）
+
+- **缝放在哪**：`TextSplitter`（`split(rawText) → List<Chunk>`）—— 索引链路只依赖这个口子，
+  `RagConfiguration` 按 `rag.splitter=self|langchain4j` 选实现并打日志说明选了谁；
+  换切分器只影响片段怎么来，检索、融合、引用拼装完全无感（同一个 DTO）
+- **两个实现的分工**：
+  - `TextChunker`（默认）：标题感知 —— 先按 Markdown 标题切小节并记标题路径，再按
+    「段落 → 句子 → 硬切」降级拆分、相邻片段留 overlap；引用能定位到「文档 > 小节 > 片段」
+  - `Langchain4jTextSplitter`（可选）：`DocumentSplitters.recursive(maxChars, overlap)` 的薄适配 ——
+    只做 `Document` 包装与 `TextSegment` 映射，**不掺自研逻辑**；片段 `heading` 恒为 `null`
+- **对照方法**：同一份语料（33 篇 / 26 题）、同一个离线向量、同一条混合通道，两种切分各建一次索引，
+  各自跑一遍「标注字面串必须落在某个片段里」的自检 —— 切分把答案切丢了也要能被发现，而不是记到检索头上
+- **对照结果（文档级 / 片段级）**：Hit@5 打平（0.885 : 0.885）；Hit@1 自研 0.808 / 0.769 vs 框架 0.769 / 0.731；
+  MRR 0.846 / 0.827 vs 0.827 / 0.801；片段数 171（均长 548）vs 152（均长 579）
+- **为什么默认仍是自研**：命中率打平时，差别落在「排序质量」与「引用可解释性」两处 ——
+  自研两项都更好，而引用定位到小节是本项目 RAG 的明示卖点（D-14）。框架版省下的只是 19 个片段的体积。
+- **什么时候该切过去**：知识库以非 Markdown 为主（PDF/Word 抽出的文本本来就没有标题结构）、
+  或准备用 `EmbeddingStoreIngestor` 把「切分 → 向量化 → 落库」整条交给框架时（链路同源更划算）
+- **测试**：4 个新单测锁定适配层行为（空输入返回空、不超 maxChars、序号连续且覆盖原文首尾、
+  框架版无标题路径而自研版有）；评测里两种切分器各跑一次对照
+
 ---
 
 ## 三、代码质量改进
@@ -632,9 +675,10 @@ supersedes_id(审计链), created_at, updated_at
 | 消息执行器 | per-bot 单线程，有界队列 100，满则丢弃 + WARN |
 | 记忆注入槽位 | 摘要 1 / 记忆 ≤5 / 笔记 ≤3 |
 | 记忆采样 | extraction-enabled + sample-rate（默认 1.0，可降 0.5） |
-| 单测 | 136 个（FC 编排 / ConversationHistory / BotManager / ToolRouter / Memory / RAG / 记忆检索 / 向量库端口与集成 / 检索评测） |
+| 单测 | 140 个（FC 编排 / ConversationHistory / BotManager / ToolRouter / Memory / RAG / 记忆检索 / 向量库端口与集成 / 检索评测 / 切分器） |
 | 向量通道 | 默认 in-memory；可切 Qdrant（10 万片段实测 p50 3.80ms / recall@10 0.692，见 2.16） |
 | 检索评测 | 33 篇文档 / 171 片段 / 26 题；文档级 Hit@5 混合 0.885（BM25 0.962、向量 0.846），见 2.17 |
+| 切分器 | 默认自研标题感知（171 片段 / Hit@5 0.885）；可切 LangChain4j recursive（152 片段 / 0.885，但无标题路径），见 2.18 |
 | CI | GitHub Actions：MySQL 8.4 + Redis 7.4 服务容器 + `mvn test` |
 | 重启恢复 | 全自动（bot_registry 持久化 LoginContext + 免扫码恢复） |
 | 编译结果 | 零 ERROR |
@@ -864,3 +908,28 @@ supersedes_id(审计链), created_at, updated_at
     中文提问打英文文档需要多语言 embedding，属于另一条链路，单独评测。
   - **⑤ 融合策略只测了一种**：当前只测「归一化加权」，未测 RRF / 重排（Reranker 已在 RAG 链路里，
     但没有用于评测对照）。触发条件：换真实 embedding 模型后混合仍不优于 BM25，就该把 RRF 纳入对照。
+
+### D-18 切分器：抽端口、接框架、默认仍留在自研
+
+- **决策**：新增 `TextSplitter` 端口，`rag.splitter=self`（默认，自研标题感知切分）或 `langchain4j`
+  （`DocumentSplitters.recursive` 薄适配）；两种实现产出同一个 DTO，配置切换，默认不换。
+- **为什么要抽端口**：切分是检索质量最敏感的一环，而项目里一直只有一种实现、一组凭经验定的参数
+  （800/120）——「自研切分够不够好」是个从没被验证过的假设。抽端口不是为了将来可能有别的实现，
+  而是为了**现在就能拿框架实现当参照物**：没有第二个实现，就没有对照。
+- **为什么接框架而不是自己再写一个更好的**：框架实现零维护、与 `EmbeddingStoreIngestor` 天然同源，
+  而且它是「别人做了十年、被大量项目用过」的默认答案 —— 拿它对标自研，结论才有说服力。
+  适配层刻意只做 `Document`/`TextSegment` 映射，不掺任何自研逻辑，否则对照就变成了「框架+自研 vs 自研」。
+- **为什么默认仍是自研（实测，不是偏好）**：文档级 Hit@5 打平（0.885 : 0.885），但自研在 Hit@1
+  （0.808 vs 0.769）与 MRR（0.846 vs 0.827）更好；更关键的是框架切分不认识 Markdown 标题，
+  片段没有标题路径 —— 引用只能落到「文档 + 片段序号」，而「引用定位到小节」是本项目 RAG 的
+  可解释性卖点（D-14）。框架版省下的只是 19 个片段（152 vs 171）的体积。
+- **什么时候该切过去**：a) 知识库以非 Markdown 为主（PDF/Word 抽出的文本本来就没有标题结构，
+  自研的标题感知失去用武之地）；b) 引用定位不再需要到小节级别；c) 准备用 `EmbeddingStoreIngestor`
+  把「切分 → 向量化 → 落库」整条交给框架 —— 那时为链路同源，切分跟着走框架更自然。
+- **已知遗留**：
+  - ① 只用了字符口径的 `recursive(maxChars, overlap)`；LC4j 还提供 token 口径
+    （`recursive(sizeInTokens, overlapInTokens, TokenCountEstimator)`），没试过 —— 触发条件：出现
+    「同长度片段里中英文信息量差太多」的检索问题（token 口径才能让中英片段长度可比）。
+  - ② 切分粒度（800/120）本身没做过敏感性扫描：现在的评测只能说明「两种切分打平」，
+    不能说明「800/120 是最优」。触发条件：真实语料（用户上传文档）超过 300 篇时，把
+    `maxChars ∈ {400, 800, 1200}` 一起扫一遍。

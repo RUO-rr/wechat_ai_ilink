@@ -23,7 +23,7 @@
 | 多模态 | 阿里百炼 DashScope（文生图 / STT / TTS）、视觉模型 |
 | 文档处理 | Apache POI（Word / Excel）、Apache Tika（文本提取）、LibreOffice（Word→PDF） |
 | 数据服务 | 高德天气、天眼查、Metaso 联网搜索 |
-| 检索（RAG） | LangChain4j（EmbeddingModel / ScoringModel 抽象）、DashScope text-embedding-v4（向量）、gte-rerank（精排，可选） |
+| 检索（RAG） | LangChain4j（EmbeddingModel / ScoringModel / DocumentSplitter 抽象）、DashScope text-embedding-v4（向量）、gte-rerank（精排，可选） |
 | 向量库（可选） | Qdrant 1.19（HNSW，经 LangChain4j EmbeddingStore 接入；默认不启用） |
 | 消息通道 | wechat-ilink-sdk（GitHub Packages） |
 
@@ -226,6 +226,9 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
   输在尾部召回被向量稀释；权重扫描 w ∈ [0.20, 0.80] 曲线几乎不动（取舍与边界见 D-17）
 - **标注即校验**：`questions.tsv` 每题的「答案字面串」必须真出现在期望文档的片段里，装载时逐条自检，
   标注写错先失败 —— 不让「标注错了」记成「检索不行」
+- **切分器对照**：自研标题感知切分 vs LangChain4j `DocumentSplitters.recursive`（同语料、同题库、同混合通道）——
+  文档级 Hit@5 打平（0.885 : 0.885），Hit@1 与 MRR 自研更好（0.808 / 0.846 vs 0.769 / 0.827），
+  且只有自研版带标题路径；`rag.splitter=self|langchain4j` 一行配置切换（选型理由见 D-18）
 - **怎么跑**：`mvn -B test -Dtest=RagEvaluationTest`
   （产出 `target/bench/rag-eval.md`；`-Drag.eval.vectorWeight=` 可覆盖融合权重）
 
@@ -234,12 +237,14 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
 - [x] 数据层迁移：MySQL（持久化）+ Redis（缓存）
 - [x] Context Manager：摘要压缩 + 长期记忆（v2.4）
 - [x] RAG 文档知识库：文件入库 → 混合检索 → 带引用回答（v2.6）
-- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索 / 向量库端口 / 检索评测，共 136 个）
+- [x] 单元测试覆盖核心链路（FC 编排 / 路由 / 历史缓存 / 记忆 / RAG / 记忆检索 / 向量库端口 / 检索评测，共 140 个）
 - [x] CI：GitHub Actions 起 MySQL + Redis 服务容器跑 `mvn test`
 - [ ] MCP 客户端接入，连接外部工具生态
 - [x] 长期记忆复用检索基建：语义召回替代「只取最近 N 条」（v2.7）
 - [x] 向量库可选接入：RetrievalIndex 端口 + Qdrant 实现（v2.8，实测后默认仍为进程内）
 - [x] 检索质量评测：33 篇公开文档 + 26 题的「向量 / BM25 / 混合」三通道对照（v2.9）
+- [x] LangChain4j 原生切分器接入与对照：`TextSplitter` 端口 + `rag.splitter` 切换（v2.10，P1 第一刀）
+- [ ] 用 LangChain4j 的 `EmbeddingStoreIngestor` / `EmbeddingStoreContentRetriever` 收口向量链路，与自研链路对照（P1）
 - [ ] 【面试前必补】补成对改写题（同一事实两种问法）并分组报数，把「题库偏置」和「模型能力不足」分开
       —— 现在的 26 题都是词面重叠型，等于在 BM25 的主场比（详见 D-17 遗留 ①）
 - [ ] 用真实 embedding 模型复跑检索评测，验证生产融合权重（离线词法向量会低估向量通道，D-17 遗留 ②）
