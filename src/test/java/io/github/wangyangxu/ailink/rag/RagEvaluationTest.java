@@ -1,5 +1,15 @@
 package io.github.wangyangxu.ailink.rag;
 
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.rag.query.Query;
+import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import io.github.wangyangxu.ailink.model.KnowledgeChunk;
 import io.github.wangyangxu.ailink.model.KnowledgeDocument;
 import org.junit.jupiter.api.Assumptions;
@@ -61,6 +71,8 @@ class RagEvaluationTest {
     private static final int DIMENSION = 512;
     private static final int CHUNK_MAX_CHARS = 800;
     private static final int CHUNK_OVERLAP_CHARS = 120;
+    /** 框架原生链路里用元数据把片段挂回来源文档（框架不认识我们的相对路径 id） */
+    private static final String DOC_ID_KEY = "doc_id";
 
     private final HashingEmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
     private final TextSplitter splitter = splitter("self");
@@ -85,6 +97,9 @@ class RagEvaluationTest {
 
     /** 一种切分策略在整份语料上的表现：片段数 + 片段平均长度 + 混合通道的两级指标 */
     private record SplitterReport(String label, int chunkCount, double avgChunkChars, Metrics doc, Metrics chunk) {}
+
+    /** 框架原生 naive RAG 基线（Ingestor → InMemoryEmbeddingStore → EmbeddingStoreContentRetriever）的成绩 */
+    private record FrameworkBaseline(String label, int segmentCount, Metrics doc, Metrics chunk) {}
 
     @Test
     void hybridRetrievalAgainstSingleChannels() throws IOException {
@@ -145,7 +160,16 @@ class RagEvaluationTest {
                 + " MRR=" + num(report.doc().mrr())
                 + " | 片段级 Hit@5=" + pct(report.chunk().hitK())));
 
-        writeReport(index, questions, perMode, docLevel, chunkLevel, sweepDoc, sweepChunk, splitterReports);
+        // 框架原生 naive RAG 基线：Document → EmbeddingStoreIngestor → EmbeddingStoreContentRetriever（向量单路）
+        FrameworkBaseline baseline = evaluateFrameworkNativePipeline(docs, questions);
+        System.out.println("  —— 框架原生 naive RAG 基线 ——");
+        System.out.println("  " + baseline.label() + " | 片段=" + baseline.segmentCount()
+                + " | 文档级 Hit@1=" + pct(baseline.doc().hit1()) + " Hit@5=" + pct(baseline.doc().hitK())
+                + " MRR=" + num(baseline.doc().mrr())
+                + " | 片段级 Hit@5=" + pct(baseline.chunk().hitK()));
+
+        writeReport(index, questions, perMode, docLevel, chunkLevel, sweepDoc, sweepChunk,
+                splitterReports, baseline);
 
         // 断言口径（离线词法向量）：混合至少要打赢它融合进来的向量通道，且不能让关键词通道塌方；
         // 「混合 ≥ 纯关键词」在这套口径下不成立 —— 哈希向量与 BM25 吃同一批 token，向量只是噪声来源，
@@ -159,6 +183,65 @@ class RagEvaluationTest {
         assertTrue(hybridDoc.hitK() >= 0.80d, "混合的文档级 Hit@5 低于底线 0.80");
         assertTrue(hybridChunk.hitK() >= 0.60d, "混合的片段级 Hit@5 低于底线 0.60");
         assertTrue(hybridDoc.mrr() > 0.80d, "混合的文档级 MRR 低于底线 0.80");
+
+        // 框架原生基线的断言只守「跑得通、不是废的」：它是参照物，不是要达标的 KPI。
+        // 数字高低如实进报告 —— 参照物要是也能达标，那说明该考虑换掉自研；达不到，正好是自研的理由。
+        assertTrue(baseline.doc().hitK() >= 0.50d,
+                "框架原生链路的文档级 Hit@5 低于 0.50，多半是元数据/接线断了而不是检索差");
+        assertTrue(baseline.chunk().hitK() >= 0.40d, "框架原生链路的片段级 Hit@5 低于 0.40");
+    }
+
+    /**
+     * 教科书式 naive RAG 基线：{@code Document} → {@code EmbeddingStoreIngestor}（切分 → 向量化 → 落库）
+     * → {@code EmbeddingStoreContentRetriever}（向量单路 top-k）。
+     * <p>
+     * 它存在的意义是当参照物：自研那套（混合召回 + 引用拼装 + 降级）值不值，得先有一条
+     * 「公认的默认答案」在同一份语料上量一遍。切分用框架自带的 {@code recursive}（框架原生链路不会
+     * 知道我们的 Markdown 标题），向量模型与自研链路共用同一个离线哈希模型 —— 差别只在链路本身。
+     */
+    private FrameworkBaseline evaluateFrameworkNativePipeline(List<Doc> docs, List<Question> questions) {
+        InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+                .documentSplitter(DocumentSplitters.recursive(CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS))
+                .embeddingModel(embedder)
+                .embeddingStore(store)
+                .build();
+        List<Document> documents = new ArrayList<>(docs.size());
+        for (Doc doc : docs) {
+            documents.add(Document.from(doc.text(), Metadata.from(DOC_ID_KEY, doc.id())));
+        }
+        ingestor.ingest(documents);
+
+        ContentRetriever retriever = EmbeddingStoreContentRetriever.builder()
+                .embeddingStore(store)
+                .embeddingModel(embedder)
+                .maxResults(TOP_K)
+                .build();
+
+        List<Outcome> outcomes = new ArrayList<>(questions.size());
+        for (Question question : questions) {
+            outcomes.add(evaluateFrameworkHit(question, retriever.retrieve(Query.from(question.text()))));
+        }
+        String label = "框架原生 naive RAG（Ingestor + ContentRetriever，向量单路）";
+        return new FrameworkBaseline(label, store.size(), metrics(label + " · 文档级", outcomes, Outcome::docRank),
+                metrics(label + " · 片段级", outcomes, Outcome::chunkRank));
+    }
+
+    /** 框架链路的判定口径与自研一致：文档级看元数据里的来源 id，片段级看片段文本是否含标准答案 */
+    private static Outcome evaluateFrameworkHit(Question question, List<Content> contents) {
+        int docRank = 0;
+        int chunkRank = 0;
+        for (int i = 0; i < contents.size(); i++) {
+            TextSegment segment = contents.get(i).textSegment();
+            String docId = segment.metadata().getString(DOC_ID_KEY);
+            if (docRank == 0 && docId != null && question.expectedDocs().contains(docId)) {
+                docRank = i + 1;
+            }
+            if (chunkRank == 0 && segment.text().contains(question.expectedContains())) {
+                chunkRank = i + 1;
+            }
+        }
+        return new Outcome(docRank, chunkRank);
     }
 
     // ==================== 检索 ====================
@@ -419,7 +502,7 @@ class RagEvaluationTest {
                              Map<String, List<Outcome>> perMode,
                              Map<String, Metrics> docLevel, Map<String, Metrics> chunkLevel,
                              Map<Double, Metrics> sweepDoc, Map<Double, Metrics> sweepChunk,
-                             List<SplitterReport> splitterReports) throws IOException {
+                             List<SplitterReport> splitterReports, FrameworkBaseline baseline) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("# RAG 检索评测：混合 vs 单路\n\n");
         sb.append("由 `RagEvaluationTest` 生成。离线词法向量（`").append(HashingEmbeddingModel.MODEL_NAME)
@@ -475,6 +558,30 @@ class RagEvaluationTest {
         sb.append("- 自研切分器先按 Markdown 标题切小节、再降级拆分，片段带标题路径（引用能定位到小节）；\n")
                 .append("  LangChain4j 的 `DocumentSplitters.recursive` 只看段落/句子/字符长度，片段没有标题路径。\n")
                 .append("- 两者产出同一个 DTO，`rag.splitter=self|langchain4j` 切换，检索与融合逻辑一行都不用改。\n");
+
+        sb.append("\n## 框架原生 naive RAG 基线（LangChain4j Ingestor + ContentRetriever）\n\n");
+        sb.append("| 链路 | 片段数 | 文档级 Hit@1 | 文档级 Hit@").append(TOP_K)
+                .append(" | 文档级 MRR | 片段级 Hit@1 | 片段级 Hit@").append(TOP_K).append(" | 片段级 MRR |\n");
+        sb.append("|---|---|---|---|---|---|---|---|---|\n");
+        sb.append("| ").append(baseline.label()).append(" | ").append(baseline.segmentCount())
+                .append(" | ").append(pct(baseline.doc().hit1())).append(" | ").append(pct(baseline.doc().hitK()))
+                .append(" | ").append(num(baseline.doc().mrr()))
+                .append(" | ").append(pct(baseline.chunk().hit1())).append(" | ").append(pct(baseline.chunk().hitK()))
+                .append(" | ").append(num(baseline.chunk().mrr())).append(" |\n");
+        Metrics inHouseDoc = docLevel.get("hybrid");
+        Metrics inHouseChunk = chunkLevel.get("hybrid");
+        sb.append("| 自研链路（混合召回 + 引用拼装） | ").append(index.chunkCount())
+                .append(" | ").append(pct(inHouseDoc.hit1())).append(" | ").append(pct(inHouseDoc.hitK()))
+                .append(" | ").append(num(inHouseDoc.mrr()))
+                .append(" | ").append(pct(inHouseChunk.hit1())).append(" | ").append(pct(inHouseChunk.hitK()))
+                .append(" | ").append(num(inHouseChunk.mrr())).append(" |\n");
+        sb.append("- 两条链路吃同一份语料、同一批 ").append(questions.size()).append(" 题、同一个离线向量模型（`")
+                .append(HashingEmbeddingModel.MODEL_NAME).append("`），差别只在链路本身：\n")
+                .append("  框架那条是 `Document` → `EmbeddingStoreIngestor`（切分→向量化→落库）→ ")
+                .append("`EmbeddingStoreContentRetriever`（向量单路 top-k）；自研那条多了关键词通道与片段级引用路径。\n");
+        sb.append("- 读法：框架链路没有关键词通道，在词面型题库上天然吃亏；它也不提供「哪一份文档的哪一节」这种引用定位。\n")
+                .append("  这也是生产写入路径没有换成 `EmbeddingStoreIngestor` 的原因 —— 它以自动生成的点 id 落库，\n")
+                .append("  而我们需要 `文档#片段` 派生的稳定点 id（重复灌库是覆盖不是新增），且 MySQL 才是权威数据源。\n");
 
         sb.append("\n## 逐题明细（片段级排名，✗ = top-").append(TOP_K).append(" 未命中）\n\n");
         sb.append("| 题目 | 期望文档 | 向量 | BM25 | 混合 |\n|---|---|---|---|---|\n");
