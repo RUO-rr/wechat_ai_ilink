@@ -1,7 +1,5 @@
 package io.github.wangyangxu.ailink.rag;
 
-import org.springframework.stereotype.Component;
-
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -18,9 +16,11 @@ import java.util.List;
  *       相邻片段保留 overlapChars 重叠，避免答案正好落在切口上。</li>
  * </ol>
  * 纯文本（没有标题）会退化成单小节切分，行为一致。
+ * <p>
+ * 它是 {@link TextSplitter} 的默认实现（{@code rag.splitter=self}，缺省即此）；
+ * 可选实现是 {@link Langchain4jTextSplitter}，两者可互换、共用同一套评测。
  */
-@Component
-public class TextChunker {
+public class TextChunker implements TextSplitter {
 
     /** 切分结果：index 为该文档内的片段序号，heading 为标题路径（可为 null） */
     public record Chunk(int index, String heading, String text) {}
@@ -33,6 +33,7 @@ public class TextChunker {
         this.props = props;
     }
 
+    @Override
     public List<Chunk> split(String rawText) {
         if (rawText == null || rawText.isBlank()) {
             return List.of();

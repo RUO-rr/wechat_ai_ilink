@@ -25,6 +25,13 @@ public class RagProperties {
     @Value("${rag.chunk.overlap-chars:120}")
     private int chunkOverlapChars;
 
+    /**
+     * 切分器实现：{@code self}（默认，自研标题感知切分）或 {@code langchain4j}
+     * （LangChain4j 的 {@code DocumentSplitters.recursive}）。见 {@link TextSplitter}。
+     */
+    @Value("${rag.splitter:self}")
+    private String splitter;
+
     @Value("${rag.retrieve.top-k:4}")
     private int retrieveTopK;
 
@@ -68,6 +75,7 @@ public class RagProperties {
     public boolean isIndexOnStartup() { return indexOnStartup; }
     public int getChunkMaxChars() { return chunkMaxChars; }
     public int getChunkOverlapChars() { return chunkOverlapChars; }
+    public String getSplitter() { return splitter; }
     public int getRetrieveTopK() { return retrieveTopK; }
     public int getCandidateMultiplier() { return candidateMultiplier; }
     public int getMaxPerDocument() { return maxPerDocument; }

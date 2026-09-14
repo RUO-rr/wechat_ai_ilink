@@ -72,7 +72,7 @@ public class KnowledgeIndexService {
     public record IndexStats(int documents, int chunks, int vectorizedChunks, int dimensions, String embeddingModelId) {}
 
     private final RagProperties props;
-    private final TextChunker chunker;
+    private final TextSplitter splitter;
     private final RetrievalIndex retrievalIndex;
     private final EmbeddingModel embeddingModel;
     private final KnowledgeDocumentMapper documentMapper;
@@ -83,13 +83,13 @@ public class KnowledgeIndexService {
 
     @Autowired
     public KnowledgeIndexService(RagProperties props,
-                                 TextChunker chunker,
+                                 TextSplitter splitter,
                                  RetrievalIndex retrievalIndex,
                                  EmbeddingModel ragEmbeddingModel,
                                  KnowledgeDocumentMapper documentMapper,
                                  KnowledgeChunkMapper chunkMapper) {
         this.props = props;
-        this.chunker = chunker;
+        this.splitter = splitter;
         this.retrievalIndex = retrievalIndex;
         this.embeddingModel = ragEmbeddingModel;
         this.documentMapper = documentMapper;
@@ -247,7 +247,7 @@ public class KnowledgeIndexService {
                     existing.getChunkCount(), 0, false);
         }
 
-        List<TextChunker.Chunk> pieces = chunker.split(content);
+        List<TextChunker.Chunk> pieces = splitter.split(content);
         KnowledgeDocument document = existing != null ? existing
                 : new KnowledgeDocument(sourceType, sourcePath, title, hash, modelId, props.getEmbeddingDimension());
         document.setSourceType(sourceType);

@@ -6,8 +6,11 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import io.github.wangyangxu.ailink.rag.HashingEmbeddingModel;
+import io.github.wangyangxu.ailink.rag.Langchain4jTextSplitter;
 import io.github.wangyangxu.ailink.rag.RagProperties;
 import io.github.wangyangxu.ailink.rag.Reranker;
+import io.github.wangyangxu.ailink.rag.TextChunker;
+import io.github.wangyangxu.ailink.rag.TextSplitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -29,6 +32,28 @@ import java.util.List;
 public class RagConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(RagConfiguration.class);
+
+    /**
+     * 切分器装配 —— 自研与框架实现二选一（{@code rag.splitter}），缺省是自研的标题感知切分。
+     * <p>
+     * 两个实现的产出是同一个 DTO，切换只在启动时发生一次，检索、融合、引用拼装都不用改；
+     * 选型依据见 {@code docs/bench/rag-eval.md} 的「切分器对照」与 D-18。
+     */
+    @Bean
+    public TextSplitter ragTextSplitter(RagProperties props) {
+        String provider = props.getSplitter();
+        if ("langchain4j".equalsIgnoreCase(provider)) {
+            log.info("RAG 切分器: LangChain4j DocumentSplitters.recursive(maxChars={}, overlap={})，片段不带标题路径",
+                    props.getChunkMaxChars(), props.getChunkOverlapChars());
+            return new Langchain4jTextSplitter(props);
+        }
+        if (provider != null && !provider.isBlank() && !"self".equalsIgnoreCase(provider)) {
+            log.warn("未知的 rag.splitter={}，按 self 处理", provider);
+        }
+        log.info("RAG 切分器: 自研标题感知切分（maxChars={} / overlap={}），片段带标题路径",
+                props.getChunkMaxChars(), props.getChunkOverlapChars());
+        return new TextChunker(props);
+    }
 
     @Bean
     public EmbeddingModel ragEmbeddingModel(RagProperties props) {
