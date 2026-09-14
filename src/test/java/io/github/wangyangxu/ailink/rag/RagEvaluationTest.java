@@ -101,6 +101,8 @@ class RagEvaluationTest {
     private int embeddingDimension = DIMENSION;
     private Reranker reranker = Reranker.noop();
     private boolean rerankAvailable;
+    /** 精排调用耗时（毫秒）：用来回答「开精排要付多少延迟」，样本来自本轮真实调用 */
+    private final List<Long> rerankLatenciesMs = new ArrayList<>();
     private final TextSplitter splitter = splitter("self");
 
     /** 语料中的一篇文档：id 用相对路径，检索命中后能直接对着来源核对 */
@@ -403,7 +405,9 @@ class RagEvaluationTest {
                     ? hit.payload().content()
                     : heading + "\n" + hit.payload().content());
         }
+        long startNanos = System.nanoTime();
         List<Double> scores = reranker.score(query, texts);
+        rerankLatenciesMs.add((System.nanoTime() - startNanos) / 1_000_000);
         HybridFusion.applyRerankScores(fused, scores, HybridFusion.DEFAULT_RERANK_WEIGHT);
     }
 
@@ -914,6 +918,17 @@ class RagEvaluationTest {
                     .append("；RRF ").append(pct(rrfDoc.hit1())).append(" / ").append(num(rrfDoc.mrr()))
                     .append(" → ").append(pct(rrfRerankDoc.hit1())).append(" / ").append(num(rrfRerankDoc.mrr()))
                     .append("。\n");
+            if (!rerankLatenciesMs.isEmpty()) {
+                List<Long> sorted = rerankLatenciesMs.stream().sorted().toList();
+                long p50 = percentile(sorted, 0.50d);
+                long p95 = percentile(sorted, 0.95d);
+                sb.append("- **精排开销（本轮实测）**：").append(sorted.size())
+                        .append(" 次调用（每次 15 个候选）—— p50=").append(p50)
+                        .append("ms、p95=").append(p95).append("ms、max=")
+                        .append(sorted.get(sorted.size() - 1)).append("ms。\n")
+                        .append("  → 开启 `RAG_RERANK_ENABLED=true` 的代价就是每次知识检索多这一次调用；\n")
+                        .append("    质量收益见本条上半段，取舍写在 D-22。\n");
+            }
         } else {
             sb.append("- 精排对照本轮未跑（`-Drag.eval.rerank=dashscope` 需要 DashScope key）。\n");
         }
@@ -956,6 +971,15 @@ class RagEvaluationTest {
     /** 带正负号的差值（报告里用来表示「改写后变化了多少」） */
     private static String delta(double value) {
         return String.format(Locale.ROOT, "%+.3f", value);
+    }
+
+    /** 已排序列表的分位数（线性插值），用来报精排延迟 p50/p95 */
+    private static long percentile(List<Long> sorted, double fraction) {
+        if (sorted.isEmpty()) {
+            return 0L;
+        }
+        int index = (int) Math.round(fraction * (sorted.size() - 1));
+        return sorted.get(Math.max(0, Math.min(sorted.size() - 1, index)));
     }
 
     private static String cohortLabel(String cohort) {
