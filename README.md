@@ -232,6 +232,10 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
 - **框架原生基线**：`Document` → `EmbeddingStoreIngestor` → `EmbeddingStoreContentRetriever`（向量单路）
   跑同一批题 —— 文档级 Hit@5 打平（0.885），但片段级自研明显领先（Hit@1 0.769 vs 0.577）；
   差距出在关键词通道「把答案那一片顶上来」这件事上（见 2.19 / D-19）
+- **真实向量模型复跑**（`-Drag.eval.model=dashscope`，需要 `RAG_EMBEDDING_API_KEY`）：
+  换成 DashScope `text-embedding-v4`（1024 维）后，向量通道文档级 Hit@5 从 0.846 涨到 0.962 ——
+  离线口径确实低估了向量；**但混合仍然输给纯 BM25**（文档级 Hit@1 0.692 vs 0.769），
+  权重扫描也没有任何一档能赢 → 瓶颈在融合策略，不在模型（见 2.20 / D-20）
 - **怎么跑**：`mvn -B test -Dtest=RagEvaluationTest`
   （产出 `target/bench/rag-eval.md`；`-Drag.eval.vectorWeight=` 可覆盖融合权重）
 
@@ -251,7 +255,8 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
 - [ ] 用 `AiServices` + `ContentRetriever` 串一条端到端问答（需 DashScope key），作为「框架原生 RAG 的完整体验」记录
 - [ ] 【面试前必补】补成对改写题（同一事实两种问法）并分组报数，把「题库偏置」和「模型能力不足」分开
       —— 现在的 26 题都是词面重叠型，等于在 BM25 的主场比（详见 D-17 遗留 ①）
-- [ ] 用真实 embedding 模型复跑检索评测，验证生产融合权重（离线词法向量会低估向量通道，D-17 遗留 ②）
+- [x] 用真实 embedding 模型复跑检索评测（DashScope `text-embedding-v4`）：向量通道确实被离线口径低估，但混合仍输 BM25（v2.12，见 2.20）
+- [ ] 把融合策略换成 RRF（rank fusion）并对照，验收标准 = 文档级 Hit@1 与 MRR 同时超过纯 BM25（D-20）
 - [ ] 应用容器化部署（Dockerfile + compose 一体化）
 
 ## 致谢

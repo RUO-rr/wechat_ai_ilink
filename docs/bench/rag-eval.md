@@ -1,6 +1,6 @@
 # RAG 检索评测：混合 vs 单路
 
-由 `RagEvaluationTest` 生成。离线词法向量（`local-hashing-v1`，512 维），三个通道吃同一份语料、同一批问题。
+由 `RagEvaluationTest` 生成。向量模型：`local-hashing-v1`（512 维），三个通道吃同一份语料、同一批问题。
 
 - 语料 171 个片段（公开文档，见 `sources.tsv`）
 - 题目 26 条，人工标注「期望文档 + 答案里的字面串」
@@ -78,10 +78,11 @@
 | 泄露《GTA6》的黑客在 R 星内部系统里给员工发了什么消息？ | gta6-leak/gamersky-hacker-found-guilty.md | 1 | 1 | 1 |
 | 泄露《GTA6》的黑客最后被判了什么？他为什么没有进监狱？ | gta6-leak/163-hacker-hospital-order.md | ✗ | 5 | ✗ |
 
-## 结论（离线词法向量口径）
+## 结论（local-hashing-v1 口径）
 
 - 文档级 Hit@5：关键词 BM25 0.962、向量 0.846、混合（w=0.65）0.885；当前最强单路是 关键词 BM25，混合落后 0.077（文档级 Hit@5）
 - 文档级 Hit@1：混合 0.808、关键词 0.769、向量 0.692；融合换来的是「头部排序更稳」，代价是尾部召回被向量通道稀释。
-- 权重扫描：文档级 Hit@5 在 w ∈ [0.20, 0.80] 上几乎不动（最高 w=0.20 → 0.885），说明离线哈希向量与 BM25 的候选高度重合，w 只影响 MRR 与 Hit@1，而这套口径下它无从体现。
+- 权重扫描：文档级 Hit@5 在 w ∈ [0.20, 0.80] 上最高出现在 w=0.20（0.885），最好的一档 MRR=0.846 —— 离线哈希向量与 BM25 的候选高度重合，w 只影响 MRR 与 Hit@1，而这套口径下它无从体现。
 - 口径提醒：`local-hashing-v1` 与 BM25 吃的是同一批 token，向量通道几乎只额外带来哈希噪声，所以这套离线口径天然偏向关键词通道；
-  要验证生产融合权重（0.65 : 0.35）需要用真实 embedding 模型重跑，换模型只改 `#embed` 一处。
+  要验证生产融合权重（0.65 : 0.35）需要换成真实 embedding 模型重跑：
+  `mvn -B test -Dtest=RagEvaluationTest -Drag.eval.model=dashscope -Drag.eval.report=target/bench/rag-eval-dashscope.md`（需 `RAG_EMBEDDING_API_KEY`）。

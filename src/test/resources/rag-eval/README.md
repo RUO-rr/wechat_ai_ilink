@@ -73,6 +73,7 @@ mvn -B test -Dtest=RagEvaluationTest
 | `-Drag.eval.vectorWeight=0.35` | 融合权重（向量 : 关键词 = w : 1−w），用来复现报告里的权重扫描 |
 | `-Drag.eval.corpus=<dir>` | 换一份语料跑同一套指标（目录结构与本目录一致即可） |
 | `-Drag.eval.report=<path>` | 报告输出路径，默认 `target/bench/rag-eval.md` |
+| `-Drag.eval.model=dashscope` | 换真实语义向量（DashScope `text-embedding-v4`，1024 维）复跑；需要环境变量 `RAG_EMBEDDING_API_KEY`（缺省复用 `LLM_STT_API_KEY`），没有 key 时该用例自动跳过 |
 
 产出：控制台指标 + 报告 md（总览 + 融合权重敏感性 + 切分器对照 + 框架原生 naive RAG 基线 + 逐题明细 + 结论）。
 其中「框架原生基线」是用 LangChain4j 的 `EmbeddingStoreIngestor` + `EmbeddingStoreContentRetriever`
