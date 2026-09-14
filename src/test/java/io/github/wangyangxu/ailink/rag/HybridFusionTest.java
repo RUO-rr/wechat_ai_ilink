@@ -94,4 +94,30 @@ class HybridFusionTest {
         assertFalse(weighted.isEmpty());
         assertTrue(HybridFusion.fuseRrf(null, null, HybridFusion.DEFAULT_RRF_K).isEmpty());
     }
+
+    @Test
+    void rerankScoresAreNormalizedThenBlendedWithRecallScore() {
+        // 召回分刻意都很小（RRF 的典型量级）：精排公式里召回分只占 0.2，且先各自归一化，所以不会被吞掉
+        List<HybridFusion.Fused<String>> hits = HybridFusion.fuseRrf(
+                List.of(new Hit("a", 0.02d), new Hit("b", 0.01d)),
+                List.of(), HybridFusion.DEFAULT_RRF_K);
+
+        boolean applied = HybridFusion.applyRerankScores(hits, List.of(1.0d, 9.0d),
+                HybridFusion.DEFAULT_RERANK_WEIGHT);
+
+        assertTrue(applied, "分数条数匹配且最大值大于 0，应当应用精排");
+        assertEquals("b", hits.get(0).payload(), "精排把 b 顶上来：9.0/9.0×0.8 + 召回×0.2 大于 a 的对应值");
+        assertTrue(hits.stream().allMatch(hit -> HybridFusion.CHANNEL_RERANK.equals(hit.channel())));
+    }
+
+    @Test
+    void rerankIsSkippedWhenScoresAreMissingOrAllZero() {
+        List<HybridFusion.Fused<String>> hits = HybridFusion.fuse(List.of(new Hit("a", 1d)), List.of(), 0.65d);
+
+        assertFalse(HybridFusion.applyRerankScores(hits, null, 0.8d));
+        assertFalse(HybridFusion.applyRerankScores(hits, List.of(), 0.8d), "条数不匹配应跳过");
+        assertFalse(HybridFusion.applyRerankScores(hits, List.of(0d), 0.8d), "最大值非正应跳过");
+        assertFalse(HybridFusion.applyRerankScores(null, List.of(1d), 0.8d));
+        assertEquals(0.65d, hits.get(0).score(), 1e-9, "跳过后分数保持召回分原值");
+    }
 }

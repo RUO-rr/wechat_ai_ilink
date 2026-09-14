@@ -15,6 +15,7 @@ import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import io.github.wangyangxu.ailink.model.KnowledgeChunk;
 import io.github.wangyangxu.ailink.model.KnowledgeDocument;
+import io.github.wangyangxu.ailink.config.RagConfiguration;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -82,6 +83,12 @@ class RagEvaluationTest {
      * 后者是「混合检索到底行不行」的判决性实验：换成真模型再跑一遍同一批题。
      */
     private static final String EVAL_MODEL = System.getProperty("rag.eval.model", "local");
+    /**
+     * 精排口径：默认 {@code off}（CI 离线跑）；{@code dashscope} 时用生产的 Reranker 装配
+     * （gte-rerank-v2，需要 DashScope key）跑「融合 + 精排」两种组合。
+     * 精排模型没有本地替身，所以这条只在有 key 时才有数 —— 报告里会写明「未跑」。
+     */
+    private static final String EVAL_RERANK = System.getProperty("rag.eval.rerank", "off");
     private static final int EMBED_BATCH_SIZE = 10;
     private static final String COHORT_LITERAL = "literal";
     private static final String COHORT_PARAPHRASE = "paraphrase";
@@ -92,6 +99,8 @@ class RagEvaluationTest {
     private EmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
     private String embeddingModelId = HashingEmbeddingModel.MODEL_NAME;
     private int embeddingDimension = DIMENSION;
+    private Reranker reranker = Reranker.noop();
+    private boolean rerankAvailable;
     private final TextSplitter splitter = splitter("self");
 
     /** 语料中的一篇文档：id 用相对路径，检索命中后能直接对着来源核对 */
@@ -113,6 +122,17 @@ class RagEvaluationTest {
     /** 参与对照的检索口径：两路单通道 + 加权融合（生产默认） + RRF（排名融合） */
     private static final List<String> MODES = List.of("vector", "keyword", "hybrid", "rrf");
 
+    /** 本次实际跑的口径：配了精排才有后两行（融合 + 精排） */
+    private List<String> modes() {
+        if (!rerankAvailable) {
+            return MODES;
+        }
+        List<String> all = new ArrayList<>(MODES);
+        all.add("hybrid+rerank");
+        all.add("rrf+rerank");
+        return all;
+    }
+
     /** 单题判定：两条命中线各自的排名（1 起，未命中记 0） */
     private record Outcome(int docRank, int chunkRank) {
         boolean docHit() { return docRank > 0; }
@@ -130,7 +150,7 @@ class RagEvaluationTest {
 
     @Test
     void hybridRetrievalAgainstSingleChannels() throws IOException {
-        configureEmbeddingModel();
+        configurePipeline();
         List<Doc> docs = loadCorpus();
         List<Question> questions = loadQuestions();
         RetrievalIndex index = buildIndex(docs, splitter);
@@ -140,7 +160,7 @@ class RagEvaluationTest {
         verifyGroundTruth(index, questions);
 
         Map<String, List<Outcome>> perMode = new LinkedHashMap<>();
-        for (String mode : MODES) {
+        for (String mode : modes()) {
             List<Outcome> outcomes = new ArrayList<>(questions.size());
             for (Question question : questions) {
                 outcomes.add(evaluate(question, search(mode, question.text(), index)));
@@ -211,7 +231,7 @@ class RagEvaluationTest {
             }
             Map<String, Metrics> perModeDoc = new LinkedHashMap<>();
             Map<String, Metrics> perModeChunk = new LinkedHashMap<>();
-            for (String mode : MODES) {
+            for (String mode : modes()) {
                 List<Outcome> subset = indexes.stream().map(perMode.get(mode)::get).toList();
                 perModeDoc.put(mode, metrics(label(mode) + " · " + cohort + " · 文档级", subset, Outcome::docRank));
                 perModeChunk.put(mode, metrics(label(mode) + " · " + cohort + " · 片段级", subset, Outcome::chunkRank));
@@ -263,6 +283,13 @@ class RagEvaluationTest {
         // RRF 同样只守「不是废的」：它是被检验的候选策略，赢不赢 BM25 是结论（写进报告），不是断言。
         assertTrue(docLevel.get("rrf").hitK() >= 0.80d, "RRF 的文档级 Hit@5 低于底线 0.80，融合实现可能有问题");
         assertTrue(chunkLevel.get("rrf").hitK() >= 0.60d, "RRF 的片段级 Hit@5 低于底线 0.60");
+
+        // 精排只在配了模型时才跑：同样只守「不是废的」，通过/未通过写进报告（D-21 的验收判定）
+        if (rerankAvailable) {
+            assertTrue(docLevel.get("rrf+rerank").hitK() >= 0.80d,
+                    "RRF+精排的文档级 Hit@5 低于底线 0.80 —— 多半是精排分与召回分的混合接错了");
+            assertTrue(docLevel.get("hybrid+rerank").hitK() >= 0.80d, "加权+精排的文档级 Hit@5 低于底线 0.80");
+        }
 
         // 题库必须真的有口语改写题 —— 否则「分组报数」是假的分组，D-17 遗留 ① 会悄悄回到原样
         long paraphrase = cohortSize(questions, COHORT_PARAPHRASE);
@@ -347,12 +374,37 @@ class RagEvaluationTest {
         } else if ("rrf".equals(mode)) {
             HybridFusion.fuseRrf(vectorHits, keywordHits, RRF_K)
                     .forEach(fused -> ranked.add(new Ranked(fused.payload(), fused.score())));
+        } else if ("hybrid+rerank".equals(mode) || "rrf+rerank".equals(mode)) {
+            List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> fused = "rrf+rerank".equals(mode)
+                    ? HybridFusion.fuseRrf(vectorHits, keywordHits, RRF_K)
+                    : HybridFusion.fuse(vectorHits, keywordHits, vectorWeight);
+            rerank(query, fused);
+            fused.forEach(hit -> ranked.add(new Ranked(hit.payload(), hit.score())));
         } else {
             HybridFusion.fuse(vectorHits, keywordHits, vectorWeight)
                     .forEach(fused -> ranked.add(new Ranked(fused.payload(), fused.score())));
         }
         ranked.sort(Comparator.comparingDouble(Ranked::score).reversed());
         return ranked.stream().limit(TOP_K).toList();
+    }
+
+    /**
+     * 精排：候选文本与生产同口径（有标题路径就拼上 heading 再送模型），混合公式也是生产那一份
+     * （{@link HybridFusion#applyRerankScores}），所以这里量到的就是线上会发生的重排。
+     */
+    private void rerank(String query, List<HybridFusion.Fused<KnowledgeVectorIndex.Entry>> fused) {
+        if (!rerankAvailable || fused.isEmpty()) {
+            return;
+        }
+        List<String> texts = new ArrayList<>(fused.size());
+        for (HybridFusion.Fused<KnowledgeVectorIndex.Entry> hit : fused) {
+            String heading = hit.payload().heading();
+            texts.add(heading == null || heading.isBlank()
+                    ? hit.payload().content()
+                    : heading + "\n" + hit.payload().content());
+        }
+        List<Double> scores = reranker.score(query, texts);
+        HybridFusion.applyRerankScores(fused, scores, HybridFusion.DEFAULT_RERANK_WEIGHT);
     }
 
     private Outcome evaluate(Question question, List<Ranked> hits) {
@@ -394,6 +446,8 @@ class RagEvaluationTest {
             case "vector" -> "向量余弦";
             case "keyword" -> "关键词 BM25";
             case "rrf" -> "融合 RRF (k=" + RRF_K + ")";
+            case "hybrid+rerank" -> "加权融合 + 精排";
+            case "rrf+rerank" -> "RRF + 精排";
             default -> "混合 0.65 : 0.35";
         };
     }
@@ -568,24 +622,56 @@ class RagEvaluationTest {
      * （key 从环境变量取，与生产 {@code RagConfiguration} 同一来源：{@code RAG_EMBEDDING_API_KEY}
      * 缺省复用 {@code LLM_STT_API_KEY}）。没有 key 时直接跳过，而不是跑出一份假数据。
      */
-    private void configureEmbeddingModel() {
-        if (!"dashscope".equalsIgnoreCase(EVAL_MODEL)) {
+    private void configurePipeline() {
+        String apiKey = firstNonBlank(System.getenv("RAG_EMBEDDING_API_KEY"), System.getenv("LLM_STT_API_KEY"));
+        if ("dashscope".equalsIgnoreCase(EVAL_MODEL)) {
+            if (apiKey == null) {
+                Assumptions.abort("rag.eval.model=dashscope 需要环境变量 RAG_EMBEDDING_API_KEY（或 LLM_STT_API_KEY）");
+            }
+            String modelName = System.getProperty("rag.eval.embeddingModel", "text-embedding-v4");
+            int dimension = Integer.parseInt(System.getProperty("rag.eval.dimension", "1024"));
+            this.embedder = QwenEmbeddingModel.builder()
+                    .apiKey(apiKey)
+                    .modelName(modelName)
+                    .dimension(dimension)
+                    .build();
+            this.embeddingModelId = modelName;
+            this.embeddingDimension = dimension;
+            System.out.println("  向量模型: DashScope " + modelName + "（dimension=" + dimension + "）");
+        }
+        configureReranker(apiKey);
+    }
+
+    /**
+     * 精排按生产口径装配：直接调 {@code RagConfiguration#ragReranker}，让「评测用的精排器」
+     * 就是「线上用的那个」（同一份 DashScope 装配、同一份失败降级为 noop 的语义）。
+     * <p>
+     * 装完先探一次（一次真实调用）：拿不到分数就说明精排没配起来（例如缺 key 或 SDK 版本不支持），
+     * 那就退回不跑「融合 + 精排」两行，并在报告里写明「未跑」，而不是拿一份假数据充数。
+     */
+    private void configureReranker(String apiKey) {
+        if (!"dashscope".equalsIgnoreCase(EVAL_RERANK)) {
             return;
         }
-        String apiKey = firstNonBlank(System.getenv("RAG_EMBEDDING_API_KEY"), System.getenv("LLM_STT_API_KEY"));
         if (apiKey == null) {
-            Assumptions.abort("rag.eval.model=dashscope 需要环境变量 RAG_EMBEDDING_API_KEY（或 LLM_STT_API_KEY）");
+            Assumptions.abort("rag.eval.rerank=dashscope 需要环境变量 RAG_EMBEDDING_API_KEY（或 LLM_STT_API_KEY）");
         }
-        String modelName = System.getProperty("rag.eval.embeddingModel", "text-embedding-v4");
-        int dimension = Integer.parseInt(System.getProperty("rag.eval.dimension", "1024"));
-        this.embedder = QwenEmbeddingModel.builder()
-                .apiKey(apiKey)
-                .modelName(modelName)
-                .dimension(dimension)
-                .build();
-        this.embeddingModelId = modelName;
-        this.embeddingDimension = dimension;
-        System.out.println("  向量模型: DashScope " + modelName + "（dimension=" + dimension + "）");
+        RagProperties props = new RagProperties();
+        ReflectionTestUtils.setField(props, "rerankEnabled", true);
+        ReflectionTestUtils.setField(props, "embeddingApiKey", apiKey);
+        ReflectionTestUtils.setField(props, "rerankModel",
+                System.getProperty("rag.eval.rerankModel", "gte-rerank-v2"));
+        this.reranker = new RagConfiguration().ragReranker(props);
+        List<Double> probe;
+        try {
+            probe = reranker.score("什么是 RAG", List.of("RAG 是检索增强生成：先检索再让模型回答。"));
+        } catch (Exception e) {
+            probe = null;
+        }
+        this.rerankAvailable = probe != null && probe.size() == 1 && probe.get(0) != null;
+        System.out.println(rerankAvailable
+                ? "  精排模型: DashScope " + props.getRerankModel() + "（已探活）"
+                : "  精排不可用，本轮跳过「融合 + 精排」对照");
     }
 
     private static String firstNonBlank(String... values) {
@@ -739,7 +825,7 @@ class RagEvaluationTest {
             sb.append("| 通道 | 文档级 Hit@1 | 文档级 Hit@").append(TOP_K)
                     .append(" | 文档级 MRR | 片段级 Hit@1 | 片段级 Hit@").append(TOP_K).append(" | 片段级 MRR |\n");
             sb.append("|---|---|---|---|---|---|---|\n");
-            for (String mode : MODES) {
+            for (String mode : modes()) {
                 Metrics doc = cohortEntry.getValue().get(mode);
                 Metrics chunk = cohortChunk.get(cohortEntry.getKey()).get(mode);
                 sb.append("| ").append(label(mode))
@@ -752,7 +838,7 @@ class RagEvaluationTest {
         if (cohortDoc.containsKey(COHORT_LITERAL) && cohortDoc.containsKey(COHORT_PARAPHRASE)) {
             sb.append("\n口语改写组相对原文措辞组的变化（负号 = 改写后变差）：\n\n");
             sb.append("| 通道 | 文档级 Hit@1 | 文档级 MRR | 片段级 Hit@1 | 片段级 MRR |\n|---|---|---|---|---|\n");
-            for (String mode : MODES) {
+            for (String mode : modes()) {
                 Metrics litDoc = cohortDoc.get(COHORT_LITERAL).get(mode);
                 Metrics parDoc = cohortDoc.get(COHORT_PARAPHRASE).get(mode);
                 Metrics litChunk = cohortChunk.get(COHORT_LITERAL).get(mode);
@@ -807,8 +893,29 @@ class RagEvaluationTest {
                 .append("（片段级：RRF ").append(num(chunkLevel.get("rrf").mrr()))
                 .append(" vs BM25 ").append(num(chunkLevel.get("keyword").mrr())).append("）\n");
         if (!rrfAccepted) {
-            sb.append("  → 排名融合也没赢：按 D-20 的约定，该接受更简单的方案（关键词优先 + 向量兜底），\n")
-                    .append("    把复杂度从融合里拿掉，而不是继续在融合上叠招式。\n");
+            sb.append("  → 名次融合赢召回、输排头：按 D-21 的结论，不换默认融合，改走「RRF 召回 + 精排」路线。\n");
+        }
+        if (rerankAvailable && docLevel.containsKey("rrf+rerank")) {
+            Metrics rrfRerankDoc = docLevel.get("rrf+rerank");
+            Metrics rrfRerankChunk = chunkLevel.get("rrf+rerank");
+            boolean rerankAccepted = rrfRerankDoc.hit1() > keywordDoc.hit1()
+                    && rrfRerankDoc.mrr() > keywordDoc.mrr()
+                    && rrfRerankChunk.hitK() >= chunkLevel.get("rrf").hitK();
+            sb.append("- **精排验收（D-21 标准：重排后文档级 Hit@1 与 MRR 同时超过纯 BM25，")
+                    .append("且片段级 Hit@5 不低于 RRF）**：").append(rerankAccepted ? "**通过**" : "**未通过**")
+                    .append(" —— RRF+精排 ").append(pct(rrfRerankDoc.hit1())).append(" / ").append(num(rrfRerankDoc.mrr()))
+                    .append("（片段级 Hit@").append(TOP_K).append(" ").append(pct(rrfRerankChunk.hitK())).append("）")
+                    .append(" vs BM25 ").append(pct(keywordDoc.hit1())).append(" / ").append(num(keywordDoc.mrr()))
+                    .append("、RRF ").append(pct(chunkLevel.get("rrf").hitK())).append("\n");
+            sb.append("- 精排前后（文档级 Hit@1 / MRR）：加权 ")
+                    .append(pct(docLevel.get("hybrid").hit1())).append(" / ").append(num(docLevel.get("hybrid").mrr()))
+                    .append(" → ").append(pct(docLevel.get("hybrid+rerank").hit1())).append(" / ")
+                    .append(num(docLevel.get("hybrid+rerank").mrr()))
+                    .append("；RRF ").append(pct(rrfDoc.hit1())).append(" / ").append(num(rrfDoc.mrr()))
+                    .append(" → ").append(pct(rrfRerankDoc.hit1())).append(" / ").append(num(rrfRerankDoc.mrr()))
+                    .append("。\n");
+        } else {
+            sb.append("- 精排对照本轮未跑（`-Drag.eval.rerank=dashscope` 需要 DashScope key）。\n");
         }
         sb.append("- 权重扫描：文档级 Hit@").append(TOP_K)
                 .append(" 在 w ∈ [0.20, 0.80] 上最高出现在 w=")
