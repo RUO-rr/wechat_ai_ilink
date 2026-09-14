@@ -338,6 +338,34 @@ RAG 的正确落点是文档知识库（见 Roadmap，与长期记忆共用检�
          文档级已经被精排拉满（Hit@5 = 1.000），下一个战场是「答案那一片」的精度：见 D-22。
 ```
 
+### v2.14 → v2.15 精排默认开启 + 端到端问答打通
+
+```
+问题：精排已经证明有效（2.22），但有两件事没做完：
+      ① 默认值仍是关闭 ——「验证了却不敢开」不算交付，得把开关和代价一起给出；
+      ② 检索质量有了数字，但「模型读检索结果回答问题」这条端到端链路从没跑过，
+         P1 的 LangChain4j 实操还差最后一块（AiServices + ContentRetriever）。
+
+做法：a) 评测给精排调用打点，用真实调用量出延迟分布；然后把 rag.rerank.enabled 默认改为 true
+         （缺 key / 模型不可用时自动降级为不精排）；
+      b) 新增 Langchain4jRagAssistantTest：同一个 assistant 接口、同一个 ChatModel，
+         只换 ContentRetriever —— 一条是框架原生（Ingestor → InMemoryEmbeddingStore →
+         EmbeddingStoreContentRetriever），一条把项目自研的混合检索 + 精排适配成 ContentRetriever；
+         产出 target/bench/rag-assistant-demo.md（问题 → 检索命中 → 两条回答）。
+
+结论一（精排代价可接受）：72 次真实调用、每次 15 个候选 —— p50 153ms、p95 206ms、max 272ms。
+      对比它换来的质量（文档级 Hit@1 0.611 → 0.778、Hit@5 → 1.000），这个代价支持「默认开启」。
+
+结论二（端到端跑通，同时暴露片段级短板）：三条问题的期望文档 3/3 被召回，两条链路都由 AiServices
+      生成了带推理的回答；但**生产同款参数（top-4）下只有 2/3 题的答案片段进了前 4** ——
+      这正是 D-22 记的片段级短板在生产设置下的现场表现：文档找对了，答案那一片没进。
+
+结论三（引用不交给模型生成）：第一版让模型自己写「来源：」，qwen-plus 直接编了路径
+      （`transaction-declarative.md`、`GTA6_2022_leak.md` 这种不存在的文件）。
+      改成**由检索结果程序化拼出处清单**（sourcePath 是真值），模型只写正文 ——
+      这条对生产同样适用：可追溯性不能建立在模型的自觉上。
+```
+
 ## 二、核心技术决策与技术亮点
 
 ### 2.1 Function Calling 工具系统 —— 策略模式 + 动态装配
@@ -839,6 +867,24 @@ supersedes_id(审计链), created_at, updated_at
 - **测试**：2 个新单测锁定精排混合（归一化 + 权重 + 覆盖召回分 + 缺失/全零时跳过不改分）；
   评测跑 6 条口径 × 2 个 cohort
 
+### 2.23 端到端问答：AiServices + ContentRetriever 的两条链路（v2.15）
+
+- **为什么单独做一层**：检索指标（Hit@K / MRR）只说明「找得准」，不说明「答得对」。
+  这一层把链路走完：`AiServices`（框架负责拼 system prompt、注入检索内容、调对话模型）
+  + `ContentRetriever`（谁提供内容由我们决定）
+- **两条链路，同一个 assistant**：同一个接口、同一个 `ChatModel`，只换检索器 ——
+  ① 框架原生：`Document → EmbeddingStoreIngestor → InMemoryEmbeddingStore →
+  EmbeddingStoreContentRetriever`；② 自研接入：项目的混合检索（向量 ∥ BM25 + 精排）适配成
+  `ContentRetriever`（一个 lambda）。**第二条是这次最有价值的验证：自研检索能被框架的 AI Service 直接消费**
+- **产出**：`docs/bench/rag-assistant-demo.md` —— 3 个问题 × 2 条链路的「检索命中 + 回答 + 出处清单」，
+  由 `Langchain4jRagAssistantTest` 真实调用生成（`qwen-plus` + `text-embedding-v4`）
+- **三条读法**：① 期望文档 3/3 被自研检索召回；② 生产同款参数（top-4）下答案片段只进了 2/3 题 ——
+  片段级短板在生产设置下同样存在（D-22 的验收标准因此更具体）；
+  ③ 出处清单由代码从 `sourcePath` 拼出，**不交给模型**（实测会编路径），可追溯性不依赖模型自觉
+- **为什么不接进生产回答路径**：生产走 FC 工具链（`SearchKnowledgeTool`），换回答路径属于产品行为变更，
+  而回答质量目前没有评测口径（只有检索指标）。先有尺子再动刀 —— 见 D-23
+- **测试**：1 个端到端用例（无 key 时自动跳过，CI 不阻塞）
+
 ---
 
 ## 三、代码质量改进
@@ -876,7 +922,7 @@ supersedes_id(审计链), created_at, updated_at
 | 消息执行器 | per-bot 单线程，有界队列 100，满则丢弃 + WARN |
 | 记忆注入槽位 | 摘要 1 / 记忆 ≤5 / 笔记 ≤3 |
 | 记忆采样 | extraction-enabled + sample-rate（默认 1.0，可降 0.5） |
-| 单测 | 141 个（FC 编排 / ConversationHistory / BotManager / ToolRouter / Memory / RAG / 记忆检索 / 向量库端口与集成 / 检索评测 / 切分器 / 融合与精排；不含需要 MySQL+Redis 的 AiLinkApplicationTests） |
+| 单测 | 142 个（FC 编排 / ConversationHistory / BotManager / ToolRouter / Memory / RAG / 记忆检索 / 向量库端口与集成 / 检索评测 / 切分器 / 融合与精排 / 端到端问答；不含需要 MySQL+Redis 的 AiLinkApplicationTests；无 key 时端到端用例自动跳过） |
 | 向量通道 | 默认 in-memory；可切 Qdrant（10 万片段实测 p50 3.80ms / recall@10 0.692，见 2.16） |
 | 检索评测 | 33 篇文档 / 171 片段 / 26 题；文档级 Hit@5 混合 0.885（BM25 0.962、向量 0.846），见 2.17 |
 | 切分器 | 默认自研标题感知（171 片段 / Hit@5 0.885）；可切 LangChain4j recursive（152 片段 / 0.885，但无标题路径），见 2.18 |
@@ -884,6 +930,8 @@ supersedes_id(审计链), created_at, updated_at
 | 真实模型复跑 | DashScope `text-embedding-v4`（1024 维）：文档 Hit@5 0.846 → 0.962，但混合仍输 BM25，见 2.20 / D-20 |
 | 融合策略 | 加权 vs RRF（真实模型 36 题）：RRF 召回最好（文档 Hit@5 0.972、片段 0.944），但排头不如 BM25；两者差距仅 1~3 题，见 2.21 / D-21 |
 | 精排 | gte-rerank-v2（真实向量 36 题）：文档 Hit@1 0.611 → 0.778、Hit@5 1.000、MRR 0.729 → 0.851，通过 D-21 验收；片段级 Hit@1 仍是 0.583~0.611 的短板，见 2.22 / D-22 |
+| 精排开销 | 72 次真实调用（每次 15 个候选）：p50 153ms / p95 206ms / max 272ms；`rag.rerank.enabled` 已默认开启 |
+| 端到端 | AiServices + ContentRetriever：3 个问题 × 2 条链路的回答与出处见 `docs/bench/rag-assistant-demo.md`；生产 top-4 下答案片段命中 2/3，见 2.23 / D-23 |
 | CI | GitHub Actions：MySQL 8.4 + Redis 7.4 服务容器 + `mvn test` |
 | 重启恢复 | 全自动（bot_registry 持久化 LoginContext + 免扫码恢复） |
 | 编译结果 | 零 ERROR |
@@ -1226,3 +1274,22 @@ supersedes_id(审计链), created_at, updated_at
   三个候选动作：① 送精排的文本改成「只送正文」（现在拼了标题路径，可能稀释信号）；
   ② 把候选数从 15 提到 30（精排对更多候选更划算）；③ 给相邻片段做拼接。
   验收标准先写死：**片段级 Hit@1 超过 0.70**（当前 0.611）。
+
+### D-23 精排默认开启；端到端问答只做「集成验证」，不动生产回答路径
+
+- **决策一**：`rag.rerank.enabled` 默认改为 **true** —— 精排的质量收益与延迟代价都已量化，
+  没有理由再让使用者自己去猜；缺 key 或模型不可用时自动降级为「不精排」，不影响可用性。
+- **决策一的依据**：质量（真实向量 36 题）文档级 Hit@1 0.611 → 0.778、MRR 0.729 → 0.851、
+  Hit@5 0.917 → 1.000；代价（72 次真实调用实测）p50 **153ms**、p95 **206ms**、max 272ms。
+  一次知识检索多花一百多毫秒换头部精度翻倍，这个交易在当前场景（个人/小组知识库，几百到几千片段）是划算的。
+- **决策二**：`AiServices + ContentRetriever` 的端到端链路作为**集成验证与体验记录**留在测试里
+  （产出 `docs/bench/rag-assistant-demo.md`），**不接入生产的回答路径**。
+- **为什么不动生产**：生产走的是 FC 工具链（`SearchKnowledgeTool` 返回上下文，LLM 再回答）。
+  换成 AI Service 的 RAG 管线属于**产品行为变更**，而回答质量目前没有评测口径 ——
+  检索指标（Hit@K / MRR）只说明找得准，不说明答得对。先有尺子再动刀：要做，先建「答案质量」评估
+  （LLM 判分或人工标注），否则改完只能靠感觉说「好像更好了」。
+- **顺带确立的一条工程惯例**：**出处清单由代码从检索结果的 `sourcePath` 拼，不交给模型生成**。
+  第一版让模型自己写「来源：」，qwen-plus 直接编了不存在的路径（`transaction-declarative.md` 等）；
+  可追溯性必须建立在真值上，而不是模型的自觉。
+- **端到端这一层还顺手量出一个事实**：生产同款参数（top-4 / 候选 12）下，三条演示问题的答案片段
+  只有 2/3 进了前 4 —— 与 D-22 的判断一致，片段级仍是主短板。
