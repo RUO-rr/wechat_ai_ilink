@@ -1,6 +1,8 @@
 package io.github.wangyangxu.ailink.rag;
 
 import dev.langchain4j.data.document.Document;
+import dev.langchain4j.community.model.dashscope.QwenEmbeddingModel;
+import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;
@@ -8,6 +10,7 @@ import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.rag.query.Query;
+import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import io.github.wangyangxu.ailink.model.KnowledgeChunk;
@@ -73,8 +76,17 @@ class RagEvaluationTest {
     private static final int CHUNK_OVERLAP_CHARS = 120;
     /** 框架原生链路里用元数据把片段挂回来源文档（框架不认识我们的相对路径 id） */
     private static final String DOC_ID_KEY = "doc_id";
+    /**
+     * 向量模型口径：{@code local}（默认，离线词法哈希向量，零网络、进 CI）或
+     * {@code dashscope}（真实语义向量，需要 {@code RAG_EMBEDDING_API_KEY}／{@code LLM_STT_API_KEY}）。
+     * 后者是「混合检索到底行不行」的判决性实验：换成真模型再跑一遍同一批题。
+     */
+    private static final String EVAL_MODEL = System.getProperty("rag.eval.model", "local");
+    private static final int EMBED_BATCH_SIZE = 10;
 
-    private final HashingEmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
+    private EmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
+    private String embeddingModelId = HashingEmbeddingModel.MODEL_NAME;
+    private int embeddingDimension = DIMENSION;
     private final TextSplitter splitter = splitter("self");
 
     /** 语料中的一篇文档：id 用相对路径，检索命中后能直接对着来源核对 */
@@ -103,6 +115,7 @@ class RagEvaluationTest {
 
     @Test
     void hybridRetrievalAgainstSingleChannels() throws IOException {
+        configureEmbeddingModel();
         List<Doc> docs = loadCorpus();
         List<Question> questions = loadQuestions();
         RetrievalIndex index = buildIndex(docs, splitter);
@@ -176,13 +189,19 @@ class RagEvaluationTest {
         // 所以这里守的是绝对底线 + 两条相对下限，真实 embedding 模型的对照跑法见 README。
         Metrics hybridDoc = docLevel.get("hybrid");
         Metrics hybridChunk = chunkLevel.get("hybrid");
-        assertTrue(hybridDoc.hitK() >= docLevel.get("vector").hitK(), "混合的文档级 Hit@5 不应低于纯向量");
-        assertTrue(hybridChunk.hitK() >= chunkLevel.get("vector").hitK(), "混合的片段级 Hit@5 不应低于纯向量");
-        assertTrue(hybridDoc.hitK() >= docLevel.get("keyword").hitK() - 0.10d,
-                "混合的文档级 Hit@5 比纯关键词低超过 10 个百分点，说明融合在拖后腿");
+        // 模型无关的下限：任何口径都必须跑得通、不是废的
         assertTrue(hybridDoc.hitK() >= 0.80d, "混合的文档级 Hit@5 低于底线 0.80");
         assertTrue(hybridChunk.hitK() >= 0.60d, "混合的片段级 Hit@5 低于底线 0.60");
-        assertTrue(hybridDoc.mrr() > 0.80d, "混合的文档级 MRR 低于底线 0.80");
+        // 下面几条是按默认离线口径标定的回归线（CI 跑的就是这套口径）。
+        // 换成真实向量模型属于「实验」：它是来看差别的，不该被另一套口径的回归线判红 ——
+        // 真实模型下的实际结论写进报告与 D-20，而不是塞进断言里。
+        if (HashingEmbeddingModel.MODEL_NAME.equals(embeddingModelId)) {
+            assertTrue(hybridDoc.hitK() >= docLevel.get("vector").hitK(), "混合的文档级 Hit@5 不应低于纯向量");
+            assertTrue(hybridChunk.hitK() >= chunkLevel.get("vector").hitK(), "混合的片段级 Hit@5 不应低于纯向量");
+            assertTrue(hybridDoc.hitK() >= docLevel.get("keyword").hitK() - 0.10d,
+                    "混合的文档级 Hit@5 比纯关键词低超过 10 个百分点，说明融合在拖后腿");
+            assertTrue(hybridDoc.mrr() > 0.80d, "混合的文档级 MRR 低于底线 0.80");
+        }
 
         // 框架原生基线的断言只守「跑得通、不是废的」：它是参照物，不是要达标的 KPI。
         // 数字高低如实进报告 —— 参照物要是也能达标，那说明该考虑换掉自研；达不到，正好是自研的理由。
@@ -255,7 +274,7 @@ class RagEvaluationTest {
     private List<Ranked> search(String mode, String query, RetrievalIndex index, double vectorWeight) {
         List<KnowledgeVectorIndex.Scored> vectorHits = "keyword".equals(mode)
                 ? List.of()
-                : index.searchVector(embed(query), HashingEmbeddingModel.MODEL_NAME, CANDIDATES);
+                : index.searchVector(embed(query), embeddingModelId, CANDIDATES);
         List<KnowledgeVectorIndex.Scored> keywordHits = "vector".equals(mode)
                 ? List.of()
                 : index.searchKeyword(query, CANDIDATES);
@@ -432,14 +451,16 @@ class RagEvaluationTest {
         for (Doc doc : docs) {
             KnowledgeDocument document = new KnowledgeDocument(KnowledgeDocument.SOURCE_RESOURCE,
                     doc.id(), doc.title(), "eval-hash-" + documentId,
-                    HashingEmbeddingModel.MODEL_NAME, DIMENSION);
+                    embeddingModelId, embeddingDimension);
             document.setId(documentId);
             documentsById.put(documentId, document);
             documentIds.put(doc.id(), documentId);
-            for (TextChunker.Chunk piece : textSplitter.split(doc.text())) {
+            List<TextChunker.Chunk> pieces = textSplitter.split(doc.text());
+            List<float[]> vectors = embedBatch(pieces.stream().map(TextChunker.Chunk::text).toList());
+            for (int i = 0; i < pieces.size(); i++) {
+                TextChunker.Chunk piece = pieces.get(i);
                 chunks.add(new KnowledgeChunk(documentId, piece.index(), piece.heading(), piece.text(),
-                        EmbeddingCodec.encode(embed(piece.text())), DIMENSION,
-                        HashingEmbeddingModel.MODEL_NAME));
+                        EmbeddingCodec.encode(vectors.get(i)), vectors.get(i).length, embeddingModelId));
             }
             documentId++;
         }
@@ -448,8 +469,66 @@ class RagEvaluationTest {
         return new InMemoryRetrievalIndex(index);
     }
 
+    /**
+     * 批量向量化 —— 与生产同口径：{@code embedAll} 分批（DashScope 单次有上限），
+     * 每条向量做 L2 归一化（生产在 {@code KnowledgeIndexService} 与 {@code KnowledgeRetriever} 里都这么做）。
+     * 离线哈希向量本身就是归一化的，所以这条路径对默认口径是零影响。
+     */
+    private List<float[]> embedBatch(List<String> texts) {
+        List<float[]> vectors = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i += EMBED_BATCH_SIZE) {
+            List<String> batch = texts.subList(i, Math.min(texts.size(), i + EMBED_BATCH_SIZE));
+            List<Embedding> embeddings = embedder.embedAll(batch.stream().map(TextSegment::from).toList()).content();
+            if (embeddings == null || embeddings.size() != batch.size()) {
+                throw new IllegalStateException("向量模型返回条数不匹配: 期望 " + batch.size());
+            }
+            for (Embedding embedding : embeddings) {
+                float[] vector = embedding.vector();
+                EmbeddingCodec.normalize(vector);
+                vectors.add(vector);
+            }
+        }
+        return vectors;
+    }
+
     private float[] embed(String text) {
-        return embedder.embed(text).content().vector();
+        float[] vector = embedder.embed(text).content().vector();
+        EmbeddingCodec.normalize(vector);
+        return vector;
+    }
+
+    /**
+     * 按 {@code rag.eval.model} 装配向量模型：默认离线词法哈希；{@code dashscope} 时用真实语义向量
+     * （key 从环境变量取，与生产 {@code RagConfiguration} 同一来源：{@code RAG_EMBEDDING_API_KEY}
+     * 缺省复用 {@code LLM_STT_API_KEY}）。没有 key 时直接跳过，而不是跑出一份假数据。
+     */
+    private void configureEmbeddingModel() {
+        if (!"dashscope".equalsIgnoreCase(EVAL_MODEL)) {
+            return;
+        }
+        String apiKey = firstNonBlank(System.getenv("RAG_EMBEDDING_API_KEY"), System.getenv("LLM_STT_API_KEY"));
+        if (apiKey == null) {
+            Assumptions.abort("rag.eval.model=dashscope 需要环境变量 RAG_EMBEDDING_API_KEY（或 LLM_STT_API_KEY）");
+        }
+        String modelName = System.getProperty("rag.eval.embeddingModel", "text-embedding-v4");
+        int dimension = Integer.parseInt(System.getProperty("rag.eval.dimension", "1024"));
+        this.embedder = QwenEmbeddingModel.builder()
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .dimension(dimension)
+                .build();
+        this.embeddingModelId = modelName;
+        this.embeddingDimension = dimension;
+        System.out.println("  向量模型: DashScope " + modelName + "（dimension=" + dimension + "）");
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     /** 切分策略按名字取实现：{@code self} = 自研标题感知切分，{@code langchain4j} = 框架递归拆分 */
@@ -505,8 +584,8 @@ class RagEvaluationTest {
                              List<SplitterReport> splitterReports, FrameworkBaseline baseline) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("# RAG 检索评测：混合 vs 单路\n\n");
-        sb.append("由 `RagEvaluationTest` 生成。离线词法向量（`").append(HashingEmbeddingModel.MODEL_NAME)
-                .append("`，").append(DIMENSION).append(" 维），三个通道吃同一份语料、同一批问题。\n\n");
+        sb.append("由 `RagEvaluationTest` 生成。向量模型：`").append(embeddingModelId).append("`（")
+                .append(embeddingDimension).append(" 维），三个通道吃同一份语料、同一批问题。\n\n");
         sb.append("- 语料 ").append(index.chunkCount()).append(" 个片段（公开文档，见 `sources.tsv`）\n");
         sb.append("- 题目 ").append(questions.size()).append(" 条，人工标注「期望文档 + 答案里的字面串」\n");
         sb.append("- 切分与生产一致：maxChars=").append(CHUNK_MAX_CHARS).append(" / overlap=").append(CHUNK_OVERLAP_CHARS)
@@ -601,7 +680,7 @@ class RagEvaluationTest {
         String bestChannel = docLevel.get("keyword").hitK() >= docLevel.get("vector").hitK() ? "关键词 BM25" : "向量余弦";
         double bestChannelHitK = Math.max(docLevel.get("keyword").hitK(), docLevel.get("vector").hitK());
         double gap = bestChannelHitK - docLevel.get("hybrid").hitK();
-        sb.append("\n## 结论（离线词法向量口径）\n\n");
+        sb.append("\n## 结论（").append(embeddingModelId).append(" 口径）\n\n");
         sb.append("- 文档级 Hit@").append(TOP_K).append("：关键词 BM25 ").append(pct(docLevel.get("keyword").hitK()))
                 .append("、向量 ").append(pct(docLevel.get("vector").hitK()))
                 .append("、混合（w=").append(fmt(VECTOR_WEIGHT)).append("）")
@@ -613,12 +692,28 @@ class RagEvaluationTest {
                 .append("、关键词 ").append(pct(docLevel.get("keyword").hit1()))
                 .append("、向量 ").append(pct(docLevel.get("vector").hit1()))
                 .append("；融合换来的是「头部排序更稳」，代价是尾部召回被向量通道稀释。\n");
-        sb.append("- 权重扫描：文档级 Hit@").append(TOP_K).append(" 在 w ∈ [0.20, 0.80] 上几乎不动（最高 w=")
-                .append(fmt(bestWeight.getKey())).append(" → ").append(pct(bestWeight.getValue().hitK()))
-                .append("），说明离线哈希向量与 BM25 的候选高度重合，w 只影响 MRR 与 Hit@1，而这套口径下它无从体现。\n");
-        sb.append("- 口径提醒：`").append(HashingEmbeddingModel.MODEL_NAME)
-                .append("` 与 BM25 吃的是同一批 token，向量通道几乎只额外带来哈希噪声，所以这套离线口径天然偏向关键词通道；\n")
-                .append("  要验证生产融合权重（0.65 : 0.35）需要用真实 embedding 模型重跑，换模型只改 `#embed` 一处。\n");
+        sb.append("- 权重扫描：文档级 Hit@").append(TOP_K)
+                .append(" 在 w ∈ [0.20, 0.80] 上最高出现在 w=")
+                .append(fmt(bestWeight.getKey())).append("（").append(pct(bestWeight.getValue().hitK())).append("）")
+                .append("，最好的一档 MRR=")
+                .append(num(sweepDoc.values().stream().mapToDouble(Metrics::mrr).max().orElse(0d)));
+        if (HashingEmbeddingModel.MODEL_NAME.equals(embeddingModelId)) {
+            sb.append(" —— 离线哈希向量与 BM25 的候选高度重合，w 只影响 MRR 与 Hit@1，而这套口径下它无从体现。\n");
+        } else {
+            sb.append(" —— 真实向量下权重才真正开始起作用（对片段级排序影响明显），\n")
+                    .append("  但如果每条 w 都赢不过纯关键词，那就说明该换的是融合策略而不是权重（见 D-20）。\n");
+        }
+        if (HashingEmbeddingModel.MODEL_NAME.equals(embeddingModelId)) {
+            sb.append("- 口径提醒：`").append(HashingEmbeddingModel.MODEL_NAME)
+                    .append("` 与 BM25 吃的是同一批 token，向量通道几乎只额外带来哈希噪声，所以这套离线口径天然偏向关键词通道；\n")
+                    .append("  要验证生产融合权重（0.65 : 0.35）需要换成真实 embedding 模型重跑：\n")
+                    .append("  `mvn -B test -Dtest=RagEvaluationTest -Drag.eval.model=dashscope ")
+                    .append("-Drag.eval.report=target/bench/rag-eval-dashscope.md`（需 `RAG_EMBEDDING_API_KEY`）。\n");
+        } else {
+            sb.append("- 口径：这次用的是**真实语义向量**（`").append(embeddingModelId)
+                    .append("`，").append(embeddingDimension).append(" 维），向量通道不再被词面重合度限制；\n")
+                    .append("  两份报告对照读（`docs/bench/rag-eval.md` 离线口径 vs 本文件）才能说清「换模型」值多少。\n");
+        }
 
         Files.createDirectories(REPORT_FILE.getParent());
         Files.writeString(REPORT_FILE, sb.toString(), StandardCharsets.UTF_8);
