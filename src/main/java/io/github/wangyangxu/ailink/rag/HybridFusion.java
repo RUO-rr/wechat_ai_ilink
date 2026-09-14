@@ -27,6 +27,9 @@ public final class HybridFusion {
     public static final String CHANNEL_HYBRID = "hybrid";
     public static final String CHANNEL_RERANK = "rerank";
 
+    /** RRF 的平滑常数：取原论文（Cormack et al. 2009）的经验值 60，作用是把名次差距压平，避免第一名通吃 */
+    public static final int DEFAULT_RRF_K = 60;
+
     private HybridFusion() {}
 
     /** 一路召回命中的最小抽象 */
@@ -105,6 +108,59 @@ public final class HybridFusion {
             max = Math.max(max, hit.score());
         }
         return max;
+    }
+
+    /**
+     * 排名融合（Reciprocal Rank Fusion）：只吃名次、不吃分数 —— 第 r 名（r 从 1 起）贡献 1/(k + r)，
+     * 两路都命中的条目自然拿到两份贡献。
+     * <p>
+     * <b>为什么需要它</b>：上面的加权融合要先按「本次召回的最大值」归一化，而向量余弦与 BM25 分的
+     * 分布形状完全不同（前者挤在 0.8~0.95，后者方差极大）——用一个不稳定的基准去比较两种分，
+     * 语料一换、候选数一改，基准就漂了。名次没有量纲，换模型、换语料都不用重新标定。
+     * <p>
+     * <b>代价</b>：名次融合丢掉了「第一名领先第二名多少」的信息（分差悬殊时加权融合能体现这一点）。
+     * 所以它必须在评测里和加权融合比过才算数 —— 见 {@code docs/bench/rag-eval.md} 的融合策略对照。
+     * <p>
+     * 入参需按分数倒序（召回接口本来就返回倒序）；这里仍会各自排一次序，避免调用方顺序不同导致
+     * 「同一份数据两次跑出不同名次」。
+     */
+    public static <V> List<Fused<V>> fuseRrf(List<? extends Hit<V>> vectorHits,
+                                             List<? extends Hit<V>> keywordHits,
+                                             int k) {
+        int smooth = Math.max(1, k);
+        Map<String, Fused<V>> byKey = new LinkedHashMap<>();
+        applyRankContribution(vectorHits, smooth, true, byKey);
+        applyRankContribution(keywordHits, smooth, false, byKey);
+
+        List<Fused<V>> hits = new ArrayList<>(byKey.values());
+        for (Fused<V> hit : hits) {
+            hit.score = hit.vectorScore + hit.keywordScore;
+            hit.channel = hit.vectorScore > 0 && hit.keywordScore > 0 ? CHANNEL_HYBRID
+                    : (hit.vectorScore > 0 ? CHANNEL_VECTOR : CHANNEL_KEYWORD);
+        }
+        // 平手时按 key 兜底排序：名次融合经常出现同分（尤其小候选集），没有兜底键就不是确定性结果
+        hits.sort(Comparator.comparingDouble((Fused<V> hit) -> hit.score()).reversed()
+                .thenComparing(hit -> hit.key()));
+        return hits;
+    }
+
+    private static <V> void applyRankContribution(List<? extends Hit<V>> hits, int smooth, boolean vectorSide,
+                                                  Map<String, Fused<V>> byKey) {
+        if (hits == null || hits.isEmpty()) {
+            return;
+        }
+        List<? extends Hit<V>> ordered = new ArrayList<>(hits);
+        ordered.sort(Comparator.comparingDouble((Hit<V> hit) -> hit.score()).reversed());
+        for (int i = 0; i < ordered.size(); i++) {
+            Hit<V> hit = ordered.get(i);
+            Fused<V> fused = byKey.computeIfAbsent(hit.key(), key -> new Fused<>(hit.key(), hit.payload()));
+            double contribution = 1d / (smooth + i + 1d);
+            if (vectorSide) {
+                fused.vectorScore = contribution;
+            } else {
+                fused.keywordScore = contribution;
+            }
+        }
     }
 
     private static double normalize(double score, double max) {
