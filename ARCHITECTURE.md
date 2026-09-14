@@ -233,6 +233,31 @@ RAG 的正确落点是文档知识库（见 Roadmap，与长期记忆共用检�
       → 默认留在自研，框架实现作为可切换 provider；什么时候该切，条件写在 D-18。
 ```
 
+### v2.10 → v2.11 接上框架原生那一整条：naive RAG 基线与自己比一次
+
+```
+问题：项目里真正自研的是「检索那一整条」—— 混合召回、融合权重、引用拼装、降级。
+      它值不值这些代码？缺一条公认的基线。另一件事：LangChain4j 的 EmbeddingStoreIngestor
+      是「切分 → 向量化 → 落库」的标准做法，生产写入路径要不要也换过去？
+
+做法：a) 先确定能不能换 —— 反编译看 Ingestor 到底怎么落库（不看文档措辞，看字节码）；
+      b) 在评测里搭一条教科书式 naive RAG：Document（带 doc_id 元数据）→ EmbeddingStoreIngestor
+         → InMemoryEmbeddingStore → EmbeddingStoreContentRetriever（向量单路 top-5），
+         同一份语料、同一批 26 题、同一个离线向量模型，与自研链路同口径比。
+
+结论一（能不能换：不换）：Ingestor 落库调的是 EmbeddingStore.addAll(embeddings, segments) ——
+      点 id 由 store 自动生成，用不到 addAll(ids, embeddings, segments) 那套显式 id 接口；
+      而我们的向量通道依赖「文档#片段 → UUID v3」的稳定点 id（重复灌库是覆盖不是新增），
+      且 MySQL 才是权威数据源（向量库随时能删掉重建）。
+      → 换过去只能替掉十几行胶水，代价是两个不变量，不划算（见 D-19）。
+
+结论二（基线成绩）：文档级 Hit@5 打平（0.885 : 0.885），自研在文档级 Hit@1/MRR 更好
+      （0.808 / 0.846 vs 0.731 / 0.801），片段级全面领先（Hit@1 0.769 vs 0.577、
+      Hit@5 0.885 vs 0.846、MRR 0.827 vs 0.684）。
+      → 差距最大的是片段级，而片段级正是拼 prompt 最要紧的一档：引用要准，模型才看得到答案。
+      这条基线从此成了「自研检索值不值」的尺子，后面任何改动都能拿它比。
+```
+
 ## 二、核心技术决策与技术亮点
 
 ### 2.1 Function Calling 工具系统 —— 策略模式 + 动态装配
@@ -638,6 +663,26 @@ supersedes_id(审计链), created_at, updated_at
 - **测试**：4 个新单测锁定适配层行为（空输入返回空、不超 maxChars、序号连续且覆盖原文首尾、
   框架版无标题路径而自研版有）；评测里两种切分器各跑一次对照
 
+### 2.19 框架原生 naive RAG 基线：给「自研值不值」一把尺子（v2.11）
+
+- **基线长什么样**：`Document`（带 `doc_id` 元数据）→ `EmbeddingStoreIngestor`（切分 → 向量化 → 落库）
+  → `InMemoryEmbeddingStore` → `EmbeddingStoreContentRetriever`（向量单路 top-5）——
+  教科书里 naive RAG 的标准写法，一行 AI Service 就能接上
+- **同口径怎么保证**：同一份 33 篇语料、同一批 26 题、同一个离线哈希向量；判定代码复用同一套口径
+  （文档级看元数据里的来源 id、片段级看片段文本是否含标准答案），所以差异只来自链路本身
+- **成绩对比**（文档级 / 片段级）：
+
+| 链路 | 片段数 | 文档 Hit@1 | 文档 Hit@5 | 文档 MRR | 片段 Hit@1 | 片段 Hit@5 | 片段 MRR |
+|---|---|---|---|---|---|---|---|
+| 框架原生 naive RAG（向量单路） | 152 | 0.731 | 0.885 | 0.801 | 0.577 | 0.846 | 0.684 |
+| 自研（混合召回 + 引用拼装） | 171 | 0.808 | 0.885 | 0.846 | 0.769 | 0.885 | 0.827 |
+
+- **读法**：文档级命中率打平，差距集中在**片段级**与**排序质量**——关键词通道把「答案那一片」
+  顶上来，这正好是拼 prompt 最要紧的一档；框架链路也没有「哪一份文档哪一节」的引用定位
+- **断言只守下限**：基线是参照物，不是 KPI，所以只断言「跑得通、不是废的」（文档级 Hit@5 ≥ 0.50）；
+  参照物哪天反超自研，那才是该动手换的信号
+- **顺带否掉一个方案**：生产写入路径不接 `EmbeddingStoreIngestor`——理由与字节码证据见 v2.11 段与 D-19
+
 ---
 
 ## 三、代码质量改进
@@ -679,6 +724,7 @@ supersedes_id(审计链), created_at, updated_at
 | 向量通道 | 默认 in-memory；可切 Qdrant（10 万片段实测 p50 3.80ms / recall@10 0.692，见 2.16） |
 | 检索评测 | 33 篇文档 / 171 片段 / 26 题；文档级 Hit@5 混合 0.885（BM25 0.962、向量 0.846），见 2.17 |
 | 切分器 | 默认自研标题感知（171 片段 / Hit@5 0.885）；可切 LangChain4j recursive（152 片段 / 0.885，但无标题路径），见 2.18 |
+| 框架基线 | LangChain4j naive RAG（Ingestor + ContentRetriever）：文档 Hit@5 0.885 打平，片段 Hit@1 0.577 vs 自研 0.769，见 2.19 |
 | CI | GitHub Actions：MySQL 8.4 + Redis 7.4 服务容器 + `mvn test` |
 | 重启恢复 | 全自动（bot_registry 持久化 LoginContext + 免扫码恢复） |
 | 编译结果 | 零 ERROR |
@@ -933,3 +979,24 @@ supersedes_id(审计链), created_at, updated_at
   - ② 切分粒度（800/120）本身没做过敏感性扫描：现在的评测只能说明「两种切分打平」，
     不能说明「800/120 是最优」。触发条件：真实语料（用户上传文档）超过 300 篇时，把
     `maxChars ∈ {400, 800, 1200}` 一起扫一遍。
+
+### D-19 生产写入路径不接 EmbeddingStoreIngestor（读了实现之后否决）
+
+- **决策**：保留自研写入路径（切分 → 批量向量化 → MySQL 片段行 + 向量库显式 id 落库）；
+  框架的 `EmbeddingStoreIngestor` 只用在评测里的 naive RAG 基线（2.19）。
+- **依据是字节码，不是文档措辞**：`EmbeddingStoreIngestor.ingest()` 调的是
+  `EmbeddingStore.addAll(List<Embedding>, List<TextSegment>)` —— 点 id 由 store 的 `generateIds()`
+  生成；而我们的 `EmbeddingStoreRetrievalIndex` 调的是 `addAll(List<String> ids, ...)`，
+  id = `nameUUIDFromBytes("documentId#chunkIndex")`。
+- **为什么这个差别重要**（两个不变量）：
+  ① **重复灌库必须是覆盖，不是新增** —— 同一份文档重新索引时（内容改了、模型换了），
+  稳定 id 让写入天然幂等；换成自动 id 就得依赖「先按 document_id 删一遍」这种两步操作，
+  中间失败会留下幽灵点。
+  ② **向量库不是权威**（D-16）：它随时可以删掉重建，重新灌出来的点必须能和旧点对上，
+  否则无法判断「这是不是同一条」；而权威是 MySQL 的片段表，Ingestor 根本不管那一侧。
+- **换来什么**：生产写入路径继续持有两个不变量；代价是保留几十行自研胶水
+  （批量循环 + 片段行构造 + 索引写入）—— 注意是几十行，不是上百行，所以「省胶水」在这里并不成立。
+- **顺带否掉的另外两件事**：① 不用 Ingestor 的默认切分（它与生产配置不一致，换切分等于全库重灌）；
+  ② 不把 `EmbeddingStoreContentRetriever` 当生产检索器（没有关键词通道与引用路径，片段级差距已经量出来了）。
+- **什么时候该重新考虑**：如果哪天决定「向量库当唯一权威」（不再往 MySQL 片段表落文本与向量），
+  自动点 id 就不再是问题，那时把整条 ingest 交给框架反而更省 —— 这是个架构选择，不是组件选择。

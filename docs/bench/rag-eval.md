@@ -35,6 +35,18 @@
   LangChain4j 的 `DocumentSplitters.recursive` 只看段落/句子/字符长度，片段没有标题路径。
 - 两者产出同一个 DTO，`rag.splitter=self|langchain4j` 切换，检索与融合逻辑一行都不用改。
 
+## 框架原生 naive RAG 基线（LangChain4j Ingestor + ContentRetriever）
+
+| 链路 | 片段数 | 文档级 Hit@1 | 文档级 Hit@5 | 文档级 MRR | 片段级 Hit@1 | 片段级 Hit@5 | 片段级 MRR |
+|---|---|---|---|---|---|---|---|---|
+| 框架原生 naive RAG（Ingestor + ContentRetriever，向量单路） | 152 | 0.731 | 0.885 | 0.801 | 0.577 | 0.846 | 0.684 |
+| 自研链路（混合召回 + 引用拼装） | 171 | 0.808 | 0.885 | 0.846 | 0.769 | 0.885 | 0.827 |
+- 两条链路吃同一份语料、同一批 26 题、同一个离线向量模型（`local-hashing-v1`），差别只在链路本身：
+  框架那条是 `Document` → `EmbeddingStoreIngestor`（切分→向量化→落库）→ `EmbeddingStoreContentRetriever`（向量单路 top-k）；自研那条多了关键词通道与片段级引用路径。
+- 读法：框架链路没有关键词通道，在词面型题库上天然吃亏；它也不提供「哪一份文档的哪一节」这种引用定位。
+  这也是生产写入路径没有换成 `EmbeddingStoreIngestor` 的原因 —— 它以自动生成的点 id 落库，
+  而我们需要 `文档#片段` 派生的稳定点 id（重复灌库是覆盖不是新增），且 MySQL 才是权威数据源。
+
 ## 逐题明细（片段级排名，✗ = top-5 未命中）
 
 | 题目 | 期望文档 | 向量 | BM25 | 混合 |

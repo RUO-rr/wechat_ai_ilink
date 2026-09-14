@@ -74,7 +74,9 @@ mvn -B test -Dtest=RagEvaluationTest
 | `-Drag.eval.corpus=<dir>` | 换一份语料跑同一套指标（目录结构与本目录一致即可） |
 | `-Drag.eval.report=<path>` | 报告输出路径，默认 `target/bench/rag-eval.md` |
 
-产出：控制台指标 + 报告 md（总览 + 融合权重敏感性 + 逐题明细 + 结论）。
+产出：控制台指标 + 报告 md（总览 + 融合权重敏感性 + 切分器对照 + 框架原生 naive RAG 基线 + 逐题明细 + 结论）。
+其中「框架原生基线」是用 LangChain4j 的 `EmbeddingStoreIngestor` + `EmbeddingStoreContentRetriever`
+搭出来的教科书式向量单路链路，作为自研混合检索的参照物（见 `ARCHITECTURE.md` 的 2.19 / D-19）。
 
 当前实测（离线 `local-hashing-v1` 口径，文档级）：Hit@5 —— BM25 0.962 > 混合 0.885 > 向量 0.846；
 Hit@1 —— 混合 0.808 > BM25 0.769 > 向量 0.692。

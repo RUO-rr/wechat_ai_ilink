@@ -229,6 +229,9 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
 - **切分器对照**：自研标题感知切分 vs LangChain4j `DocumentSplitters.recursive`（同语料、同题库、同混合通道）——
   文档级 Hit@5 打平（0.885 : 0.885），Hit@1 与 MRR 自研更好（0.808 / 0.846 vs 0.769 / 0.827），
   且只有自研版带标题路径；`rag.splitter=self|langchain4j` 一行配置切换（选型理由见 D-18）
+- **框架原生基线**：`Document` → `EmbeddingStoreIngestor` → `EmbeddingStoreContentRetriever`（向量单路）
+  跑同一批题 —— 文档级 Hit@5 打平（0.885），但片段级自研明显领先（Hit@1 0.769 vs 0.577）；
+  差距出在关键词通道「把答案那一片顶上来」这件事上（见 2.19 / D-19）
 - **怎么跑**：`mvn -B test -Dtest=RagEvaluationTest`
   （产出 `target/bench/rag-eval.md`；`-Drag.eval.vectorWeight=` 可覆盖融合权重）
 
@@ -244,7 +247,8 @@ rag-eval 语料：33 篇公开文档 / 171 个片段 / 26 道标注题
 - [x] 向量库可选接入：RetrievalIndex 端口 + Qdrant 实现（v2.8，实测后默认仍为进程内）
 - [x] 检索质量评测：33 篇公开文档 + 26 题的「向量 / BM25 / 混合」三通道对照（v2.9）
 - [x] LangChain4j 原生切分器接入与对照：`TextSplitter` 端口 + `rag.splitter` 切换（v2.10，P1 第一刀）
-- [ ] 用 LangChain4j 的 `EmbeddingStoreIngestor` / `EmbeddingStoreContentRetriever` 收口向量链路，与自研链路对照（P1）
+- [x] LangChain4j 原生链路基线：`EmbeddingStoreIngestor` + `EmbeddingStoreContentRetriever` 搭 naive RAG，与自研同口径对照（v2.11，P1；生产写入路径按 D-19 保留自研）
+- [ ] 用 `AiServices` + `ContentRetriever` 串一条端到端问答（需 DashScope key），作为「框架原生 RAG 的完整体验」记录
 - [ ] 【面试前必补】补成对改写题（同一事实两种问法）并分组报数，把「题库偏置」和「模型能力不足」分开
       —— 现在的 26 题都是词面重叠型，等于在 BM25 的主场比（详见 D-17 遗留 ①）
 - [ ] 用真实 embedding 模型复跑检索评测，验证生产融合权重（离线词法向量会低估向量通道，D-17 遗留 ②）
