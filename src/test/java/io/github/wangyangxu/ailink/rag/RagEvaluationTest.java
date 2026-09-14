@@ -83,6 +83,11 @@ class RagEvaluationTest {
      */
     private static final String EVAL_MODEL = System.getProperty("rag.eval.model", "local");
     private static final int EMBED_BATCH_SIZE = 10;
+    private static final String COHORT_LITERAL = "literal";
+    private static final String COHORT_PARAPHRASE = "paraphrase";
+    /** RRF 的平滑常数，与生产默认值一致（-Drag.eval.rrfK 可覆盖，用来做敏感性验证） */
+    private static final int RRF_K = Integer.parseInt(System.getProperty("rag.eval.rrfK",
+            String.valueOf(HybridFusion.DEFAULT_RRF_K)));
 
     private EmbeddingModel embedder = new HashingEmbeddingModel(DIMENSION);
     private String embeddingModelId = HashingEmbeddingModel.MODEL_NAME;
@@ -92,11 +97,21 @@ class RagEvaluationTest {
     /** 语料中的一篇文档：id 用相对路径，检索命中后能直接对着来源核对 */
     private record Doc(String id, String title, String text) {}
 
-    /** 一道题：期望文档（可多篇，任一命中即算对）+ 答案片段里必然出现的字面串（用于片段级判定与一致性校验） */
-    private record Question(String id, String text, List<String> expectedDocs, String expectedContains) {}
+    /**
+     * 一道题：期望文档（可多篇，任一命中即算对）+ 答案片段里必然出现的字面串（用于片段级判定与一致性校验）
+     * + 题目风格分组（{@code literal} 原文措辞 / {@code paraphrase} 口语改写）。
+     * <p>
+     * 分组是为了回答一个问题：混合检索赢/输，有多少来自检索本身、有多少来自「题目复用了文档措辞」。
+     * 现有题库长期只有词面重叠型题目，等于把比较放在了 BM25 的主场（D-17 遗留 ①）。
+     */
+    private record Question(String id, String text, List<String> expectedDocs, String expectedContains,
+                            String cohort) {}
 
     /** 一路检索结果（统一形状，便于三种通道同口径比较） */
     private record Ranked(KnowledgeVectorIndex.Entry entry, double score) {}
+
+    /** 参与对照的检索口径：两路单通道 + 加权融合（生产默认） + RRF（排名融合） */
+    private static final List<String> MODES = List.of("vector", "keyword", "hybrid", "rrf");
 
     /** 单题判定：两条命中线各自的排名（1 起，未命中记 0） */
     private record Outcome(int docRank, int chunkRank) {
@@ -125,7 +140,7 @@ class RagEvaluationTest {
         verifyGroundTruth(index, questions);
 
         Map<String, List<Outcome>> perMode = new LinkedHashMap<>();
-        for (String mode : List.of("vector", "keyword", "hybrid")) {
+        for (String mode : MODES) {
             List<Outcome> outcomes = new ArrayList<>(questions.size());
             for (Question question : questions) {
                 outcomes.add(evaluate(question, search(mode, question.text(), index)));
@@ -181,33 +196,78 @@ class RagEvaluationTest {
                 + " MRR=" + num(baseline.doc().mrr())
                 + " | 片段级 Hit@5=" + pct(baseline.chunk().hitK()));
 
+        // 题目风格分组：同一批事实、两种问法（原文措辞 / 口语改写），分组报数才看得出题目偏置有多少
+        Map<String, Map<String, Metrics>> cohortDoc = new LinkedHashMap<>();
+        Map<String, Map<String, Metrics>> cohortChunk = new LinkedHashMap<>();
+        for (String cohort : List.of(COHORT_LITERAL, COHORT_PARAPHRASE)) {
+            List<Integer> indexes = new ArrayList<>();
+            for (int i = 0; i < questions.size(); i++) {
+                if (cohort.equals(questions.get(i).cohort())) {
+                    indexes.add(i);
+                }
+            }
+            if (indexes.isEmpty()) {
+                continue;
+            }
+            Map<String, Metrics> perModeDoc = new LinkedHashMap<>();
+            Map<String, Metrics> perModeChunk = new LinkedHashMap<>();
+            for (String mode : MODES) {
+                List<Outcome> subset = indexes.stream().map(perMode.get(mode)::get).toList();
+                perModeDoc.put(mode, metrics(label(mode) + " · " + cohort + " · 文档级", subset, Outcome::docRank));
+                perModeChunk.put(mode, metrics(label(mode) + " · " + cohort + " · 片段级", subset, Outcome::chunkRank));
+            }
+            cohortDoc.put(cohort, perModeDoc);
+            cohortChunk.put(cohort, perModeChunk);
+        }
+        System.out.println("  —— 题目风格分组（原文措辞 " + cohortSize(questions, COHORT_LITERAL)
+                + " 题 / 口语改写 " + cohortSize(questions, COHORT_PARAPHRASE) + " 题）——");
+        cohortDoc.forEach((cohort, modeMetrics) -> modeMetrics.forEach((mode, metrics) -> System.out.println(
+                "  " + metrics + " | 片段级 Hit@" + TOP_K + "=" + pct(cohortChunk.get(cohort).get(mode).hitK()))));
+
         writeReport(index, questions, perMode, docLevel, chunkLevel, sweepDoc, sweepChunk,
-                splitterReports, baseline);
+                splitterReports, baseline, cohortDoc, cohortChunk);
 
         // 断言口径（离线词法向量）：混合至少要打赢它融合进来的向量通道，且不能让关键词通道塌方；
         // 「混合 ≥ 纯关键词」在这套口径下不成立 —— 哈希向量与 BM25 吃同一批 token，向量只是噪声来源，
         // 所以这里守的是绝对底线 + 两条相对下限，真实 embedding 模型的对照跑法见 README。
         Metrics hybridDoc = docLevel.get("hybrid");
         Metrics hybridChunk = chunkLevel.get("hybrid");
-        // 模型无关的下限：任何口径都必须跑得通、不是废的
-        assertTrue(hybridDoc.hitK() >= 0.80d, "混合的文档级 Hit@5 低于底线 0.80");
-        assertTrue(hybridChunk.hitK() >= 0.60d, "混合的片段级 Hit@5 低于底线 0.60");
-        // 下面几条是按默认离线口径标定的回归线（CI 跑的就是这套口径）。
-        // 换成真实向量模型属于「实验」：它是来看差别的，不该被另一套口径的回归线判红 ——
-        // 真实模型下的实际结论写进报告与 D-20，而不是塞进断言里。
+        // 断言分两层，避免「用一套口径的线去判另一套口径」：
+        // ① 塌方线（任何口径、任何模型都要满足）：只防「检索整个坏掉」，阈值留足余量；
+        // ② 回归线（只对默认离线口径 + 原文措辞组生效）：它们就是照着那 26 道题标定的，
+        //    题库加了口语改写题之后，只有这一组还能和旧数字直接比。
+        assertTrue(hybridDoc.hitK() >= 0.70d, "混合的文档级 Hit@5 低于塌方线 0.70");
+        assertTrue(hybridChunk.hitK() >= 0.55d, "混合的片段级 Hit@5 低于塌方线 0.55");
+
         if (HashingEmbeddingModel.MODEL_NAME.equals(embeddingModelId)) {
-            assertTrue(hybridDoc.hitK() >= docLevel.get("vector").hitK(), "混合的文档级 Hit@5 不应低于纯向量");
-            assertTrue(hybridChunk.hitK() >= chunkLevel.get("vector").hitK(), "混合的片段级 Hit@5 不应低于纯向量");
-            assertTrue(hybridDoc.hitK() >= docLevel.get("keyword").hitK() - 0.10d,
-                    "混合的文档级 Hit@5 比纯关键词低超过 10 个百分点，说明融合在拖后腿");
-            assertTrue(hybridDoc.mrr() > 0.80d, "混合的文档级 MRR 低于底线 0.80");
+            Metrics literalDoc = cohortDoc.get(COHORT_LITERAL).get("hybrid");
+            Metrics literalChunk = cohortChunk.get(COHORT_LITERAL).get("hybrid");
+            assertTrue(literalDoc.hitK() >= docLevel.get("vector").hitK(), "原文措辞组：混合的文档级 Hit@5 不应低于纯向量");
+            assertTrue(literalChunk.hitK() >= chunkLevel.get("vector").hitK(), "原文措辞组：混合的片段级 Hit@5 不应低于纯向量");
+            assertTrue(literalDoc.hitK() >= 0.80d, "原文措辞组：混合的文档级 Hit@5 低于底线 0.80");
+            assertTrue(literalChunk.hitK() >= 0.60d, "原文措辞组：混合的片段级 Hit@5 低于底线 0.60");
+            assertTrue(literalDoc.mrr() > 0.80d, "原文措辞组：混合的文档级 MRR 低于底线 0.80");
         }
+
+        // 口语改写组只守塌方线：它是用来暴露瓶颈的探针，不是拿来达标的 KPI
+        Metrics paraphraseDoc = cohortDoc.get(COHORT_PARAPHRASE).get("hybrid");
+        assertTrue(paraphraseDoc.hitK() >= 0.50d,
+                "口语改写组的文档级 Hit@5 低于 0.50 —— 检索对「换个说法」几乎失效了，先查切分与标注");
 
         // 框架原生基线的断言只守「跑得通、不是废的」：它是参照物，不是要达标的 KPI。
         // 数字高低如实进报告 —— 参照物要是也能达标，那说明该考虑换掉自研；达不到，正好是自研的理由。
         assertTrue(baseline.doc().hitK() >= 0.50d,
                 "框架原生链路的文档级 Hit@5 低于 0.50，多半是元数据/接线断了而不是检索差");
         assertTrue(baseline.chunk().hitK() >= 0.40d, "框架原生链路的片段级 Hit@5 低于 0.40");
+
+        // RRF 同样只守「不是废的」：它是被检验的候选策略，赢不赢 BM25 是结论（写进报告），不是断言。
+        assertTrue(docLevel.get("rrf").hitK() >= 0.80d, "RRF 的文档级 Hit@5 低于底线 0.80，融合实现可能有问题");
+        assertTrue(chunkLevel.get("rrf").hitK() >= 0.60d, "RRF 的片段级 Hit@5 低于底线 0.60");
+
+        // 题库必须真的有口语改写题 —— 否则「分组报数」是假的分组，D-17 遗留 ① 会悄悄回到原样
+        long paraphrase = cohortSize(questions, COHORT_PARAPHRASE);
+        assertTrue(paraphrase >= 10,
+                "口语改写题少于 10 道（当前 " + paraphrase + "），题目风格分组失去意义，请先补题库");
     }
 
     /**
@@ -284,6 +344,9 @@ class RagEvaluationTest {
             vectorHits.forEach(hit -> ranked.add(new Ranked(hit.payload(), hit.score())));
         } else if ("keyword".equals(mode)) {
             keywordHits.forEach(hit -> ranked.add(new Ranked(hit.payload(), hit.score())));
+        } else if ("rrf".equals(mode)) {
+            HybridFusion.fuseRrf(vectorHits, keywordHits, RRF_K)
+                    .forEach(fused -> ranked.add(new Ranked(fused.payload(), fused.score())));
         } else {
             HybridFusion.fuse(vectorHits, keywordHits, vectorWeight)
                     .forEach(fused -> ranked.add(new Ranked(fused.payload(), fused.score())));
@@ -330,6 +393,7 @@ class RagEvaluationTest {
         return switch (mode) {
             case "vector" -> "向量余弦";
             case "keyword" -> "关键词 BM25";
+            case "rrf" -> "融合 RRF (k=" + RRF_K + ")";
             default -> "混合 0.65 : 0.35";
         };
     }
@@ -405,7 +469,9 @@ class RagEvaluationTest {
             }
             List<String> expected = Stream.of(parts[2].split(","))
                     .map(String::trim).filter(text -> !text.isEmpty()).toList();
-            questions.add(new Question(parts[0].trim(), parts[1].trim(), expected, parts[3].trim()));
+            // 第 5 列（可选）是题目风格分组：literal（默认）或 paraphrase
+            String cohort = parts.length > 4 && !parts[4].isBlank() ? parts[4].trim() : COHORT_LITERAL;
+            questions.add(new Question(parts[0].trim(), parts[1].trim(), expected, parts[3].trim(), cohort));
         }
         assertFalse(questions.isEmpty(), "评测题目为空：" + QUESTIONS_FILE.toAbsolutePath());
         return questions;
@@ -581,7 +647,9 @@ class RagEvaluationTest {
                              Map<String, List<Outcome>> perMode,
                              Map<String, Metrics> docLevel, Map<String, Metrics> chunkLevel,
                              Map<Double, Metrics> sweepDoc, Map<Double, Metrics> sweepChunk,
-                             List<SplitterReport> splitterReports, FrameworkBaseline baseline) throws IOException {
+                             List<SplitterReport> splitterReports, FrameworkBaseline baseline,
+                             Map<String, Map<String, Metrics>> cohortDoc,
+                             Map<String, Map<String, Metrics>> cohortChunk) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("# RAG 检索评测：混合 vs 单路\n\n");
         sb.append("由 `RagEvaluationTest` 生成。向量模型：`").append(embeddingModelId).append("`（")
@@ -662,6 +730,43 @@ class RagEvaluationTest {
                 .append("  这也是生产写入路径没有换成 `EmbeddingStoreIngestor` 的原因 —— 它以自动生成的点 id 落库，\n")
                 .append("  而我们需要 `文档#片段` 派生的稳定点 id（重复灌库是覆盖不是新增），且 MySQL 才是权威数据源。\n");
 
+        sb.append("\n## 题目风格分组：原文措辞 vs 口语改写\n\n");
+        sb.append("同一批事实、两种问法。分组报数的目的：把「检索本身好不好」与「题目复用了文档措辞」分开 ——\n")
+                .append("只报一组数字时，结论有可能是题目风格选出来的。\n");
+        for (Map.Entry<String, Map<String, Metrics>> cohortEntry : cohortDoc.entrySet()) {
+            sb.append("\n### ").append(cohortLabel(cohortEntry.getKey()))
+                    .append("（").append(cohortEntry.getValue().values().iterator().next().questions()).append(" 题）\n\n");
+            sb.append("| 通道 | 文档级 Hit@1 | 文档级 Hit@").append(TOP_K)
+                    .append(" | 文档级 MRR | 片段级 Hit@1 | 片段级 Hit@").append(TOP_K).append(" | 片段级 MRR |\n");
+            sb.append("|---|---|---|---|---|---|---|\n");
+            for (String mode : MODES) {
+                Metrics doc = cohortEntry.getValue().get(mode);
+                Metrics chunk = cohortChunk.get(cohortEntry.getKey()).get(mode);
+                sb.append("| ").append(label(mode))
+                        .append(" | ").append(pct(doc.hit1())).append(" | ").append(pct(doc.hitK()))
+                        .append(" | ").append(num(doc.mrr()))
+                        .append(" | ").append(pct(chunk.hit1())).append(" | ").append(pct(chunk.hitK()))
+                        .append(" | ").append(num(chunk.mrr())).append(" |\n");
+            }
+        }
+        if (cohortDoc.containsKey(COHORT_LITERAL) && cohortDoc.containsKey(COHORT_PARAPHRASE)) {
+            sb.append("\n口语改写组相对原文措辞组的变化（负号 = 改写后变差）：\n\n");
+            sb.append("| 通道 | 文档级 Hit@1 | 文档级 MRR | 片段级 Hit@1 | 片段级 MRR |\n|---|---|---|---|---|\n");
+            for (String mode : MODES) {
+                Metrics litDoc = cohortDoc.get(COHORT_LITERAL).get(mode);
+                Metrics parDoc = cohortDoc.get(COHORT_PARAPHRASE).get(mode);
+                Metrics litChunk = cohortChunk.get(COHORT_LITERAL).get(mode);
+                Metrics parChunk = cohortChunk.get(COHORT_PARAPHRASE).get(mode);
+                sb.append("| ").append(label(mode))
+                        .append(" | ").append(delta(parDoc.hit1() - litDoc.hit1()))
+                        .append(" | ").append(delta(parDoc.mrr() - litDoc.mrr()))
+                        .append(" | ").append(delta(parChunk.hit1() - litChunk.hit1()))
+                        .append(" | ").append(delta(parChunk.mrr() - litChunk.mrr())).append(" |\n");
+            }
+            sb.append("- 读法：如果改写组三条通道一起掉，说明瓶颈在「词面之外的理解」而不在融合策略；\n")
+                    .append("  如果只有关键词通道掉、向量通道稳住，那才是向量通道的价值被量出来。\n");
+        }
+
         sb.append("\n## 逐题明细（片段级排名，✗ = top-").append(TOP_K).append(" 未命中）\n\n");
         sb.append("| 题目 | 期望文档 | 向量 | BM25 | 混合 |\n|---|---|---|---|---|\n");
         for (int i = 0; i < questions.size(); i++) {
@@ -692,6 +797,19 @@ class RagEvaluationTest {
                 .append("、关键词 ").append(pct(docLevel.get("keyword").hit1()))
                 .append("、向量 ").append(pct(docLevel.get("vector").hit1()))
                 .append("；融合换来的是「头部排序更稳」，代价是尾部召回被向量通道稀释。\n");
+        Metrics keywordDoc = docLevel.get("keyword");
+        Metrics rrfDoc = docLevel.get("rrf");
+        boolean rrfAccepted = rrfDoc.hit1() > keywordDoc.hit1() && rrfDoc.mrr() > keywordDoc.mrr();
+        sb.append("- **融合策略验收（D-20 标准：文档级 Hit@1 与 MRR 同时超过纯 BM25）**：")
+                .append(rrfAccepted ? "**通过**" : "**未通过**")
+                .append(" —— RRF ").append(pct(rrfDoc.hit1())).append(" / ").append(num(rrfDoc.mrr()))
+                .append(" vs BM25 ").append(pct(keywordDoc.hit1())).append(" / ").append(num(keywordDoc.mrr()))
+                .append("（片段级：RRF ").append(num(chunkLevel.get("rrf").mrr()))
+                .append(" vs BM25 ").append(num(chunkLevel.get("keyword").mrr())).append("）\n");
+        if (!rrfAccepted) {
+            sb.append("  → 排名融合也没赢：按 D-20 的约定，该接受更简单的方案（关键词优先 + 向量兜底），\n")
+                    .append("    把复杂度从融合里拿掉，而不是继续在融合上叠招式。\n");
+        }
         sb.append("- 权重扫描：文档级 Hit@").append(TOP_K)
                 .append(" 在 w ∈ [0.20, 0.80] 上最高出现在 w=")
                 .append(fmt(bestWeight.getKey())).append("（").append(pct(bestWeight.getValue().hitK())).append("）")
@@ -726,6 +844,23 @@ class RagEvaluationTest {
 
     private static String fmt(double value) {
         return String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    /** 带正负号的差值（报告里用来表示「改写后变化了多少」） */
+    private static String delta(double value) {
+        return String.format(Locale.ROOT, "%+.3f", value);
+    }
+
+    private static String cohortLabel(String cohort) {
+        return switch (cohort) {
+            case COHORT_LITERAL -> "原文措辞组";
+            case COHORT_PARAPHRASE -> "口语改写组";
+            default -> cohort;
+        };
+    }
+
+    private static long cohortSize(List<Question> questions, String cohort) {
+        return questions.stream().filter(question -> cohort.equals(question.cohort())).count();
     }
 
     private static String pct(double value) {

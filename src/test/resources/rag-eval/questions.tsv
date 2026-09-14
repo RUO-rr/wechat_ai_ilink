@@ -1,28 +1,38 @@
-# rag-eval 题库：id / question / expected_docs / expected_contains（制表符分隔；expected_docs 可多篇用逗号分隔）
-id	question	expected_docs	expected_contains
-q01	Which unit of modularity does AOP introduce, compared with classes in OOP?	spring-boot/spring-boot-aop-concepts.md	the unit of modularity is the aspect
-q02	How does Spring AOP relate to the Spring IoC container?	spring-boot/spring-boot-aop-concepts.md	AOP complements Spring IoC
-q03	What is different about Spring declarative transaction management compared with EJB CMT?	spring-boot/spring-boot-tx-declarative.md	Unlike EJB CMT, which is tied to JTA
-q04	What does the value of the @Pointcut annotation contain?	spring-boot/spring-boot-aop-pointcuts.md	The pointcut expression that forms the value of the @Pointcut
-q05	How do you declare before advice in an aspect?	spring-boot/spring-boot-aop-advice.md	using the @Before annotation
-q06	Which two mechanisms can Spring AOP use to create proxies?	spring-boot/spring-boot-aop-proxying.md	JDK dynamic proxies or CGLIB
-q07	Are checked exceptions rolled back by default in declarative transactions?	spring-boot/spring-boot-tx-rollback.md	Checked exceptions that are thrown from a transactional method
-q08	What is the difference between PROPAGATION_REQUIRED and PROPAGATION_REQUIRES_NEW?	spring-boot/spring-boot-tx-propagation.md	PROPAGATION_REQUIRES_NEW, in contrast to PROPAGATION_REQUIRED
-q09	What are the two RAG stages, and is indexing online or offline?	langchain4j/langchain4j-rag-core-concepts.md	The RAG process is divided into 2 distinct stages
-q10	Which document splitters does LangChain4j provide out of the box?	langchain4j/langchain4j-rag-splitters-and-segments.md	DocumentByParagraphSplitter
-q11	What is Metadata in a Document useful for?	langchain4j/langchain4j-rag-document-pipeline.md	is useful for several reasons
-q12	What is the EmbeddingStoreIngestor responsible for?	langchain4j/langchain4j-rag-embedding-and-store.md	represents an ingestion pipeline
-q13	Which component is the entry point of an advanced RAG pipeline?	langchain4j/langchain4j-rag-naive-and-advanced.md	is an entry point into the RAG pipeline
-q14	Is there a built-in content retriever for web search instead of a vector store?	langchain4j/langchain4j-rag-content-retriever.md	WebSearchContentRetriever
-q15	《联合国宪章》第 53 条里提到的“敌国”指的是谁？	enemy-state-clause/un-charter-chapter-8.md	本条第一项所称敌国系指第二次世界大战中为本宪章任何签字国之敌国而言
-q16	国际托管制度适用于哪些领土？和敌国有什么关系？	enemy-state-clause/un-charter-chapter-12.md	因第二次世界大战结果或将自敌国割离之领土
-q17	《联合国宪章》第 107 条到底写了什么？	enemy-state-clause/un-charter-chapter-17.md	本宪章并不取消或禁止负行动责任之政府
-q18	所谓“敌国条款”到底指哪几条，规定了什么内容？	enemy-state-clause/gmw-enemy-clause-explained.md	第53条、第77条及第107条
-q19	日本说“敌国条款”已经过时，中方是怎么回应的？	enemy-state-clause/mfa-enemy-clause-still-valid.md	作为针对二战战败国的特殊制度安排，至今仍然有效
-q20	我国大熊猫野外种群现在有多少只？降级消息是在哪个部门的发布会上公布的？	wildlife/chinanews-panda-downgraded-to-vulnerable.md	大熊猫野外种群数量达到1800多只
-q21	世界自然保护联盟的濒危物种红色名录把受威胁等级分成哪几档？	wildlife/chinanews-panda-downgraded-to-vulnerable.md	灭绝、野外灭绝、极危、濒危、易危、近危、无危、数据缺乏和未评估
-q22	全球唯一圈养的棕色大熊猫叫什么名字？它是怎么被发现的？	wildlife/xinhua-brown-panda-qizai.md	全球唯一圈养的棕色大熊猫
-q23	大熊猫国家公园整合了多少个自然保护地？	wildlife/forestry-giant-panda-reserve.md	将原有的73个自然保护地整合归并
-q24	2022 年泄露的《GTA6》片段有多少个，最后是在哪里被放出来的？	gta6-leak/gamersky-breach-trial-details.md	90个《GTA6》开发片段在GTAForums上泄露
-q25	泄露《GTA6》的黑客在 R 星内部系统里给员工发了什么消息？	gta6-leak/gamersky-hacker-found-guilty.md	我不是R星的员工
-q26	泄露《GTA6》的黑客最后被判了什么？他为什么没有进监狱？	gta6-leak/163-hacker-hospital-order.md	直到精神健康审判庭决定他不再对他人构成危险为止
+# rag-eval 题库：id / question / expected_docs / expected_contains / cohort（制表符分隔；expected_docs 可多篇用逗号分隔）
+id	question	expected_docs	expected_contains	cohort
+q01	Which unit of modularity does AOP introduce, compared with classes in OOP?	spring-boot/spring-boot-aop-concepts.md	the unit of modularity is the aspect	literal
+q02	How does Spring AOP relate to the Spring IoC container?	spring-boot/spring-boot-aop-concepts.md	AOP complements Spring IoC	literal
+q03	What is different about Spring declarative transaction management compared with EJB CMT?	spring-boot/spring-boot-tx-declarative.md	Unlike EJB CMT, which is tied to JTA	literal
+q04	What does the value of the @Pointcut annotation contain?	spring-boot/spring-boot-aop-pointcuts.md	The pointcut expression that forms the value of the @Pointcut	literal
+q05	How do you declare before advice in an aspect?	spring-boot/spring-boot-aop-advice.md	using the @Before annotation	literal
+q06	Which two mechanisms can Spring AOP use to create proxies?	spring-boot/spring-boot-aop-proxying.md	JDK dynamic proxies or CGLIB	literal
+q07	Are checked exceptions rolled back by default in declarative transactions?	spring-boot/spring-boot-tx-rollback.md	Checked exceptions that are thrown from a transactional method	literal
+q08	What is the difference between PROPAGATION_REQUIRED and PROPAGATION_REQUIRES_NEW?	spring-boot/spring-boot-tx-propagation.md	PROPAGATION_REQUIRES_NEW, in contrast to PROPAGATION_REQUIRED	literal
+q09	What are the two RAG stages, and is indexing online or offline?	langchain4j/langchain4j-rag-core-concepts.md	The RAG process is divided into 2 distinct stages	literal
+q10	Which document splitters does LangChain4j provide out of the box?	langchain4j/langchain4j-rag-splitters-and-segments.md	DocumentByParagraphSplitter	literal
+q11	What is Metadata in a Document useful for?	langchain4j/langchain4j-rag-document-pipeline.md	is useful for several reasons	literal
+q12	What is the EmbeddingStoreIngestor responsible for?	langchain4j/langchain4j-rag-embedding-and-store.md	represents an ingestion pipeline	literal
+q13	Which component is the entry point of an advanced RAG pipeline?	langchain4j/langchain4j-rag-naive-and-advanced.md	is an entry point into the RAG pipeline	literal
+q14	Is there a built-in content retriever for web search instead of a vector store?	langchain4j/langchain4j-rag-content-retriever.md	WebSearchContentRetriever	literal
+q15	《联合国宪章》第 53 条里提到的“敌国”指的是谁？	enemy-state-clause/un-charter-chapter-8.md	本条第一项所称敌国系指第二次世界大战中为本宪章任何签字国之敌国而言	literal
+q16	国际托管制度适用于哪些领土？和敌国有什么关系？	enemy-state-clause/un-charter-chapter-12.md	因第二次世界大战结果或将自敌国割离之领土	literal
+q17	《联合国宪章》第 107 条到底写了什么？	enemy-state-clause/un-charter-chapter-17.md	本宪章并不取消或禁止负行动责任之政府	literal
+q18	所谓“敌国条款”到底指哪几条，规定了什么内容？	enemy-state-clause/gmw-enemy-clause-explained.md	第53条、第77条及第107条	literal
+q19	日本说“敌国条款”已经过时，中方是怎么回应的？	enemy-state-clause/mfa-enemy-clause-still-valid.md	作为针对二战战败国的特殊制度安排，至今仍然有效	literal
+q20	我国大熊猫野外种群现在有多少只？降级消息是在哪个部门的发布会上公布的？	wildlife/chinanews-panda-downgraded-to-vulnerable.md	大熊猫野外种群数量达到1800多只	literal
+q21	世界自然保护联盟的濒危物种红色名录把受威胁等级分成哪几档？	wildlife/chinanews-panda-downgraded-to-vulnerable.md	灭绝、野外灭绝、极危、濒危、易危、近危、无危、数据缺乏和未评估	literal
+q22	全球唯一圈养的棕色大熊猫叫什么名字？它是怎么被发现的？	wildlife/xinhua-brown-panda-qizai.md	全球唯一圈养的棕色大熊猫	literal
+q23	大熊猫国家公园整合了多少个自然保护地？	wildlife/forestry-giant-panda-reserve.md	将原有的73个自然保护地整合归并	literal
+q24	2022 年泄露的《GTA6》片段有多少个，最后是在哪里被放出来的？	gta6-leak/gamersky-breach-trial-details.md	90个《GTA6》开发片段在GTAForums上泄露	literal
+q25	泄露《GTA6》的黑客在 R 星内部系统里给员工发了什么消息？	gta6-leak/gamersky-hacker-found-guilty.md	我不是R星的员工	literal
+q26	泄露《GTA6》的黑客最后被判了什么？他为什么没有进监狱？	gta6-leak/163-hacker-hospital-order.md	直到精神健康审判庭决定他不再对他人构成危险为止	literal
+q01p	In Spring AOP support, what takes the role that a class plays in object-oriented design?	spring-boot/spring-boot-aop-concepts.md	the unit of modularity is the aspect	paraphrase
+q07p	A method throws an exception that the compiler forces me to handle — will Spring roll my transaction back by default?	spring-boot/spring-boot-tx-rollback.md	Checked exceptions that are thrown from a transactional method	paraphrase
+q10p	I want to cut long text into pieces LangChain4j can embed — what ready-made options does it offer?	langchain4j/langchain4j-rag-splitters-and-segments.md	DocumentByParagraphSplitter	paraphrase
+q13p	I am building something fancier than naive RAG — which LangChain4j component do I start from?	langchain4j/langchain4j-rag-naive-and-advanced.md	is an entry point into the RAG pipeline	paraphrase
+q15p	宪章里说的那种“战败国”，具体是指哪些国家？	enemy-state-clause/un-charter-chapter-8.md	本条第一项所称敌国系指第二次世界大战中为本宪章任何签字国之敌国而言	paraphrase
+q18p	“敌国条款”这个说法，到底对应宪章里的哪几条文字？	enemy-state-clause/gmw-enemy-clause-explained.md	第53条、第77条及第107条	paraphrase
+q20p	中国的野生大熊猫现在大概还剩多少只？	wildlife/chinanews-panda-downgraded-to-vulnerable.md	大熊猫野外种群数量达到1800多只	paraphrase
+q23p	为了保护大熊猫，国家把多少个保护区合并到一起了？	wildlife/forestry-giant-panda-reserve.md	将原有的73个自然保护地整合归并	paraphrase
+q24p	2022 年那波 GTA6 的实机画面一共漏出来多少段？在哪儿被集中放出的？	gta6-leak/gamersky-breach-trial-details.md	90个《GTA6》开发片段在GTAForums上泄露	paraphrase
+q26p	那个泄露 GTA6 的年轻人最后落得什么下场？	gta6-leak/163-hacker-hospital-order.md	直到精神健康审判庭决定他不再对他人构成危险为止	paraphrase
