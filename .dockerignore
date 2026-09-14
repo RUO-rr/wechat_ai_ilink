@@ -1,0 +1,25 @@
+# 构建上下文瘦身：只把「构建镜像需要的东西」送进 Docker
+# 注意：src/main/resources 下的 .md 是内置知识资产，不能排除（这里只排除根目录的文档）
+
+.git
+.github
+.idea
+.agents
+.claude
+.mvn
+target
+data
+voice_cache
+dump.rdb
+*.iml
+
+README.md
+ARCHITECTURE.md
+HELP.md
+project-flow.mermaid
+docs
+
+mvnw
+mvnw.cmd
+.env
+.env.*

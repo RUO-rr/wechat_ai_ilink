@@ -6,12 +6,20 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: ai_ilink
+      MYSQL_USER: ai_ilink
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_ilink123}
       TZ: Asia/Shanghai
     ports:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   redis:
     image: redis:7.4
@@ -21,7 +29,53 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # 应用本体：表结构由应用启动时的 spring.sql.init（classpath:schema.sql）自动创建，
+  # 首次起容器不需要手动执行 SQL。
+  app:
+    build: .
+    image: ai-ilink:local
+    container_name: ai-ilink-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: ai_ilink
+      MYSQL_USER: ai_ilink
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_ilink123}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TZ: Asia/Shanghai
+      # 密钥与模型配置从 .env 注入（不进镜像、不进仓库）；留空则对应能力自动降级
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      RAG_EMBEDDING_API_KEY: ${RAG_EMBEDDING_API_KEY:-}
+      RAG_RERANK_ENABLED: ${RAG_RERANK_ENABLED:-true}
+      MANAGEMENT_API_TOKEN: ${MANAGEMENT_API_TOKEN:-change-me-in-production}
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", 'curl -fsS -o /dev/null -H "X-API-Token: $${MANAGEMENT_API_TOKEN}" http://127.0.0.1:8080/api/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
 
 volumes:
   mysql-data:
   redis-data:
+  app-data:
