@@ -95,9 +95,9 @@ RAG 的正确落点是文档知识库（见 Roadmap，与长期记忆共用检�
 ### v2.4 → v2.5 消息性能与可观测性
 
 ```
-关键发现（反编译 SDK 字节码）：「心跳」= 消息轮询
-  └─ HeartbeatService.scheduleWithFixedDelay(30s) → healthChecker.check()
-       = pollAndDispatchMessages() → UpdateService.poll() → 同步分发 onMessages
+关键发现（官方 SDK 文档）：「心跳」= 消息轮询
+  └─ HeartbeatService（ScheduledExecutorService + intervalMs，默认 30s）每周期触发
+       → ILinkClient.pollAndDispatchMessages() → UpdateService.poll() → 同步分发 onMessages
   ├─ 消息最坏等一个轮询周期（30s）才开始被拉取
   ├─ onMessages 同步分发 → LLM 处理阻塞轮询线程 → scheduleWithFixedDelay 顺延 → 恶性循环
   └─ 30s 间隔 + 35s readTimeout 并存 → 有效轮询周期可能 30~65s
@@ -615,7 +615,7 @@ supersedes_id(审计链), created_at, updated_at
 
 ### 2.12 消息投递与性能（v2.4 → v2.5）
 
-**机制发现（反编译）**：SDK 无 WebSocket 推送，消息投递 = 心跳调度器内的 `pollAndDispatchMessages()`
+**机制发现（官方 SDK 文档）**：SDK 无 WebSocket 推送，消息投递 = 心跳调度器内的轮询任务
 （scheduleWithFixedDelay）。因此缩短 `heartbeatIntervalMs` 即缩短投递最坏等待，这是 30s → 3s 的依据。
 
 **异步化**：`onMessages` 只做入队（per-bot 单线程 `msg-{botId}`，有界队列 100，满则丢弃 + WARN + 指标），
@@ -981,8 +981,8 @@ supersedes_id(审计链), created_at, updated_at
   不依赖业务层的"消息流量"，避免行为随机。
 - **为什么不要**"30 秒观察期 + 有无消息判定 token 有效性"：
   ① 一次性定时器覆盖不了"登录 5 分钟后被服务器踢掉"——观察期早已销毁；
-  ② 用消息流量判活会频繁误触发（用户本来就没发消息 ≠ token 死了），体验灾难。已实测反编译确认
-  SDK 提供的正是 onDisconnect/onHeartbeat 一族接口，方案可行而非猜测。
+  ② 用消息流量判活会频繁误触发（用户本来就没发消息 ≠ token 死了），体验灾难。查 SDK 文档与接口列表确认
+  SDK 提供的正是 onDisconnect/onHeartbeat 一族回调，方案可行而非猜测。
 
 ### D-06 强制重扫与登录串行化
 - **决策**：`loginBotAsync(botId, forceNewQr)` 作为唯一登录入口；force 时跳过 LoginContext 直接出二维码；
@@ -1020,11 +1020,11 @@ supersedes_id(审计链), created_at, updated_at
 - **为什么不是全量每次都提取**：每轮提取 + 每 10 轮摘要是两套 LLM 调用，成本翻倍——
   `sample-rate` 先满跑一周观测账单，超预算降到 0.5 是显式可调策略而非隐藏假设。
 
-### D-10 心跳=消息轮询：修复与测量（反编译驱动的性能优化）
+### D-10 心跳=消息轮询：修复与测量（文档确认机制 + 测量验证收益）
 - **决策**：`heartbeatIntervalMs` 30s → 3s；`onMessages` 只入队（per-bot 单线程执行器，队列 100，
   满则丢弃 + WARN）；心跳失败阈值 3 → 10。
-- **为什么**：反编译 SDK 证实"心跳任务 = `pollAndDispatchMessages()`"（scheduleWithFixedDelay），
-  消息最坏等 30s；且 onMessages 同步分发会让 LLM 处理阻塞轮询线程，形成"处理越慢轮询越慢"的恶性循环。
+- **为什么**：查官方 SDK 文档确认"心跳任务即消息拉取"（消息不推送、由心跳调度器轮询），
+  默认间隔 30s 即消息最坏等待；且 onMessages 同步分发会让 LLM 处理阻塞轮询线程，形成"处理越慢轮询越慢"的恶性循环。
   修复必须同时做"缩短间隔（投递）"与"异步化（处理）"，否则只改间隔被处理耗时完全抵消。
 - **为什么阈值同步上调**：间隔缩短 10 倍后，3 次失败 ≈ 9-15s 就会触发降级——网络抖动即误伤；
   10 次 ≈ 30s 失败窗口是间隔调整的必然连带，不是顺手改配置。
